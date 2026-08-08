@@ -12,3 +12,10 @@ wheels/
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Issue tracker state — local, and holds a Dolt server log
+.beads/
+
+# The scraped store: not regenerable without re-scraping, and it is a record of
+# what you have been reading. Never commit it.
+pm_jobs.db

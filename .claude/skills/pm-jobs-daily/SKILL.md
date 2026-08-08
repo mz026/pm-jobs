@@ -13,7 +13,9 @@ You do the reading yourself. The Python side owns scraping, storage, the two
 deterministic filters, dedup, and validation; you answer the questions the
 posting can't be filtered on.
 
-Run from the repo root (`/Users/yanghsing/codes/toys/pm-jobs`).
+Run everything from `${CLAUDE_PROJECT_DIR}`. The database path is relative to
+the working directory, so running from anywhere else silently creates a second,
+empty one instead of finding the real store.
 
 You are running in a forked context, so you have no conversation history —
 everything you need is in this file and in the batch files you export. Report
