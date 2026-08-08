@@ -36,9 +36,16 @@ Supersedes `docs/stage-3-ranking.md` (resume-based ranking, dropped).
   - [x] `/job/<board>/<id>/open` — mark read, redirect to source
   - [x] Favorite toggle, and mark-unread to undo a read
 - [x] **9. `pm-jobs daily`** — scrape → backfill → review, one command
-- [ ] **10. Verify end to end** on real data, then measure a day's actual cost
+- [x] **10. Verify end to end** on real data, then measure a day's actual cost
   - [x] Scrape, backfill, prefilter, dedup, and web verified on the real 149 postings
-  - [ ] Model pass — blocked on credentials (`ANTHROPIC_API_KEY` or `ant auth login`)
+  - [x] Model pass verified via the agent backend — three postings judged for real
+- [x] **11. Agent backend: `--export` / `--apply`**
+  - [x] `review --export` — start a run, record prefilter drops, emit the to-judge list
+  - [x] Export carries the instructions and schema, so the skill never restates the prompt
+  - [x] `review --apply` — validate against the run's pending set, then the same `decide()`
+  - [x] Rejects on stale run, changed preferences, unknown tag, missing field, already-judged
+- [x] **12. `daily --no-review`** so the skill can drive the judging itself
+- [x] **13. The skill** — `.claude/skills/pm-jobs-daily/SKILL.md`, batched export → judge → apply
 
 ---
 
@@ -247,6 +254,34 @@ Returned per job:
 `languages_required` is not displayed. It exists so that when a drop looks
 wrong, you can see what the model thought it read — the difference between
 auditing a decision and guessing at it.
+
+### Two backends, one policy
+
+The judging can come from either the API or from the Claude Code agent that
+invokes the daily skill. Both answer the same five questions against the same
+instructions, and both hand their answers to the same `decide()` function — so
+which one ran is a billing and setup difference, not a behavioural one.
+
+| | `pm-jobs review` | `--export` → skill → `--apply` |
+|---|---|---|
+| Needs an API key | yes | **no** — uses the session you're already in |
+| Runs unattended (cron, launchd) | yes | no — needs a session |
+| Per-job isolation | each call is independent | batched, so judgments share context |
+| Cost | API billing, ~$8/month | Claude Code context |
+
+The agent backend is the primary path, because the flow is invoked by hand
+anyway. The API backend stays for the day this wants to run at 7am on its own,
+and costs one flag to keep.
+
+**Batch the agent path.** Handing it all 57 pending descriptions at once is
+~90k tokens, and job 50's language call would be anchored by the 49 before it —
+a coupling the per-call API path doesn't have. Batches of ~10, applied after
+each, keep context bounded and cost one batch on failure instead of the lot.
+
+**`--apply` is the validation seam.** Letting the agent write SQLite directly
+would mean a malformed verdict corrupts state quietly. Going through a command
+that checks the schema, rejects unknown tags, and pins the `raw_job_id` gives
+the agent path the same guarantees structured output gives the API path.
 
 ### Cost
 

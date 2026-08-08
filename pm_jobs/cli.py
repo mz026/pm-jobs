@@ -11,7 +11,7 @@ from .backfill import run_backfill
 from .config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from .preferences import DEFAULT_PREFERENCES_PATH, load_preferences
 from .prefilter import prefilter
-from .review import run_review
+from .review import ApplyError, apply_verdicts, export_batch, run_review
 from .reviewstore import ReviewStore
 from .scrape import plan, resolve_window, run_scrape
 from .store import DEFAULT_DB_PATH, RawStore, connect
@@ -57,12 +57,19 @@ def build_parser() -> argparse.ArgumentParser:
                              "(read and favorite state is untouched)")
     review.add_argument("--drops", action="store_true",
                         help="show what has been dropped, and why, instead of reviewing")
+    review.add_argument("--export", metavar="FILE", nargs="?", const="-",
+                        help="write a batch of postings to judge (with the instructions and "
+                             "schema) instead of calling the API; '-' or omitted writes stdout")
+    review.add_argument("--apply", metavar="FILE",
+                        help="store verdicts produced from an --export batch")
 
     daily = sub.add_parser("daily", help="scrape since the last run, backfill, and review")
     _add_common(daily)
     daily.add_argument("--prefs", type=Path, default=DEFAULT_PREFERENCES_PATH)
     daily.add_argument("--full", action="store_true",
                        help="use each search's configured window instead of scraping incrementally")
+    daily.add_argument("--no-review", action="store_true",
+                       help="scrape and backfill only; leave judging to `review --export/--apply`")
 
     web = sub.add_parser("web", help="serve the unread / favorite / read views")
     _add_common(web)
@@ -187,6 +194,30 @@ def cmd_review(args) -> int:
             n = store.clear_reviews()
             print(f"Discarded {n} verdicts. Read and favorite state kept.")
 
+        if args.apply:
+            payload = json.loads(Path(args.apply).read_text())
+            try:
+                applied = apply_verdicts(store, prefs, payload)
+            except ApplyError as exc:
+                print(f"Rejected: {exc}", file=sys.stderr)
+                return 2
+            remaining = len(store.pending())
+            print(f"Applied {applied.judged} verdicts — {applied.kept} kept, "
+                  f"{applied.judged - applied.kept} dropped. {remaining} still to judge.")
+            return 0
+
+        if args.export:
+            batch = export_batch(store, prefs, limit=args.limit)
+            text = json.dumps(batch, indent=2, ensure_ascii=False)
+            if args.export == "-":
+                print(text)
+            else:
+                Path(args.export).write_text(text)
+                print(f"{len(batch['jobs'])} postings to judge -> {args.export}"
+                      f"  (run {batch['run_id']}, {batch['prefiltered']} prefiltered)",
+                      file=sys.stderr)
+            return 0
+
         pending = store.pending(limit=args.limit)
         if args.dry_run:
             counts: dict[str, int] = {}
@@ -242,12 +273,17 @@ def cmd_daily(args) -> int:
         back = run_backfill(raw, on_progress=say)
         say(back.summary())
 
-        say("\n── review ──")
-        reviewed = run_review(reviews, prefs, on_progress=say)
-        say(reviewed.summary())
-        if reviewed.judged:
-            say(f"tokens: {reviewed.input_tokens} in ({reviewed.cached_tokens} cached), "
-                f"{reviewed.output_tokens} out — about ${reviewed.cost_estimate(prefs.model):.2f}")
+        reviewed = None
+        if args.no_review:
+            say(f"\n{len(reviews.pending())} postings awaiting review "
+                "(run `pm-jobs review --export`)")
+        else:
+            say("\n── review ──")
+            reviewed = run_review(reviews, prefs, on_progress=say)
+            say(reviewed.summary())
+            if reviewed.judged:
+                say(f"tokens: {reviewed.input_tokens} in ({reviewed.cached_tokens} cached), "
+                    f"{reviewed.output_tokens} out — about ${reviewed.cost_estimate(prefs.model):.2f}")
 
         counts = reviews.counts()
         say(f"\n{counts['unread']} unread · {counts['favorite']} favorite · {counts['read']} read")
@@ -255,9 +291,11 @@ def cmd_daily(args) -> int:
     finally:
         conn.close()
 
+    if reviewed is None:
+        return 0 if scraped.status == "ok" else 1
     if reviewed.aborted:
         print(f"\n{reviewed.aborted}", file=sys.stderr)
-        print("Set ANTHROPIC_API_KEY, or run `ant auth login`.", file=sys.stderr)
+        print("Set ANTHROPIC_API_KEY, or use `pm-jobs review --export`.", file=sys.stderr)
         return 2
     return 0 if scraped.status == "ok" and reviewed.status == "ok" else 1
 

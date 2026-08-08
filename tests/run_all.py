@@ -13,7 +13,8 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent
-SUITES = ["smoke.py", "smoke_backfill.py", "smoke_day2.py", "smoke_review.py", "smoke_web.py"]
+SUITES = ["smoke.py", "smoke_backfill.py", "smoke_day2.py", "smoke_review.py",
+          "smoke_agent_backend.py", "smoke_web.py"]
 
 failed = []
 for name in SUITES:

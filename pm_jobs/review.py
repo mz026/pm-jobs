@@ -271,6 +271,135 @@ def decide(prefs: Preferences, result: dict[str, Any]) -> tuple[str, str | None]
     return "keep", None
 
 
+AGENT_MODEL = "agent"   # recorded on verdicts the invoking agent produced
+
+
+def prefilter_pass(store: ReviewStore, prefs: Preferences, run_id: int,
+                   pending: list[sqlite3.Row]) -> tuple[list[tuple[sqlite3.Row, str | None, bool]], int]:
+    """Record the deterministic drops; return what still needs judging."""
+    to_judge: list[tuple[sqlite3.Row, str | None, bool]] = []
+    dropped = 0
+    for job in pending:
+        description = json.loads(job["payload"]).get("description")
+        pre = prefilter(job["title"], description, prefs)
+        if not pre.keep:
+            store.record(run_id, job, stage="prefilter", verdict="drop", drop_reason=pre.reason)
+            dropped += 1
+        else:
+            to_judge.append((job, description, pre.role_certain))
+    store.conn.commit()
+    return to_judge, dropped
+
+
+def export_batch(store: ReviewStore, prefs: Preferences, limit: int | None = None) -> dict[str, Any]:
+    """Everything an agent needs to judge a batch, in one object.
+
+    The instructions and schema travel with the work rather than being restated
+    in the skill. There is one definition of how a posting gets judged, and both
+    backends read it from here — otherwise the two would drift apart the first
+    time either was tuned, and verdicts would stop being comparable.
+    """
+    pending = store.pending(limit=limit)
+    run_id = store.start_run(AGENT_MODEL, prefs.hash)
+    to_judge, dropped = prefilter_pass(store, prefs, run_id, pending)
+
+    return {
+        "run_id": run_id,
+        "prefs_hash": prefs.hash,
+        "prefiltered": dropped,
+        "instructions": build_system_prompt(prefs),
+        "schema": RESULT_SCHEMA,
+        "jobs": [
+            {
+                "raw_job_id": job["raw_job_id"],
+                "board": job["board"],
+                "board_job_id": job["board_job_id"],
+                "title": job["title"],
+                "company": job["company"],
+                "location": job["location"],
+                "date_posted": job["date_posted"],
+                # False means the title mentions product but matched no
+                # configured role phrase — the model has to settle the role.
+                "role_certain": role_certain,
+                "description": description or "",
+            }
+            for job, description, role_certain in to_judge
+        ],
+    }
+
+
+class ApplyError(Exception):
+    """The verdict file doesn't match the run it claims to belong to."""
+
+
+def apply_verdicts(store: ReviewStore, prefs: Preferences, payload: dict[str, Any]) -> ReviewResult:
+    """Validate agent-produced verdicts and store them.
+
+    This is the seam that keeps the agent backend as trustworthy as the API
+    one. An agent writing SQLite directly could corrupt state quietly; here a
+    malformed verdict is rejected with a message, and the same `decide()` turns
+    answers into a verdict, so both backends can't drift on policy.
+    """
+    run_id = payload.get("run_id")
+    if not isinstance(run_id, int):
+        raise ApplyError("missing or non-integer 'run_id'")
+
+    run = store.conn.execute("SELECT * FROM review_runs WHERE id = ?", (run_id,)).fetchone()
+    if run is None:
+        raise ApplyError(f"no review run {run_id} — did the export happen?")
+    if run["prefs_hash"] != prefs.hash:
+        raise ApplyError(
+            f"preferences changed since run {run_id} was exported "
+            f"({run['prefs_hash']} -> {prefs.hash}). Re-export rather than applying stale verdicts."
+        )
+
+    verdicts = payload.get("verdicts")
+    if not isinstance(verdicts, list) or not verdicts:
+        raise ApplyError("'verdicts' must be a non-empty list")
+
+    # Only postings with no verdict yet are applicable. This makes apply
+    # idempotent and blocks a stale file from overwriting a later judgment.
+    eligible = {row["raw_job_id"]: row for row in store.pending()}
+    known_tags = set(prefs.tag_names)
+    result = ReviewResult(considered=len(verdicts))
+
+    for entry in verdicts:
+        raw_job_id = entry.get("raw_job_id")
+        job = eligible.get(raw_job_id)
+        if job is None:
+            raise ApplyError(
+                f"raw_job_id {raw_job_id!r} is not awaiting judgement in this run "
+                "(already judged, or never exported)"
+            )
+        for field_name in ("is_product_role", "languages_required", "tags", "summary"):
+            if field_name not in entry:
+                raise ApplyError(f"raw_job_id {raw_job_id}: missing {field_name!r}")
+
+        unknown = [t for t in entry["tags"] if t not in known_tags]
+        if unknown:
+            raise ApplyError(
+                f"raw_job_id {raw_job_id}: unknown tag(s) {unknown}; "
+                f"expected any of {sorted(known_tags)}"
+            )
+
+        verdict, reason = decide(prefs, entry)
+        result.judged += 1
+        if verdict == "keep":
+            result.kept += 1
+        store.record(
+            run_id, job, stage="judged", verdict=verdict, drop_reason=reason,
+            languages=entry.get("languages_required") or [], tags=entry["tags"],
+            summary=entry.get("summary"), model=AGENT_MODEL,
+        )
+
+    store.conn.commit()
+    remaining = len(store.pending())
+    store.finish_run(run_id, "ok" if not remaining else "partial",
+                     judged=(run["judged"] or 0) + result.judged,
+                     kept=(run["kept"] or 0) + result.kept)
+    return result
+
+
 def run_review(
     store: ReviewStore,
     prefs: Preferences,
@@ -290,16 +419,7 @@ def run_review(
 
     # Deterministic drops first — they cost nothing and remove most of the list
     # before the client is even constructed.
-    to_judge: list[tuple[sqlite3.Row, str | None, bool]] = []
-    for job in pending:
-        description = json.loads(job["payload"]).get("description")
-        pre = prefilter(job["title"], description, prefs)
-        if not pre.keep:
-            store.record(run_id, job, stage="prefilter", verdict="drop", drop_reason=pre.reason)
-            result.prefiltered += 1
-        else:
-            to_judge.append((job, description, pre.role_certain))
-    store.conn.commit()
+    to_judge, result.prefiltered = prefilter_pass(store, prefs, run_id, pending)
     on_progress(f"prefilter: {result.prefiltered} dropped, {len(to_judge)} to judge")
 
     if to_judge and client is None:
