@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .backfill import run_backfill
 from .config import DEFAULT_CONFIG_PATH, ConfigError, load_config
-from .scrape import plan, run_scrape
+from .scrape import plan, resolve_window, run_scrape
 from .store import DEFAULT_DB_PATH, RawStore, connect
 
 
@@ -29,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     scrape.add_argument("--pause", type=float, default=None, help="seconds to wait between board calls")
     scrape.add_argument("--no-backfill", action="store_true",
                         help="skip the description backfill that normally follows a scrape")
+    scrape.add_argument("--since-hours", type=int, metavar="N",
+                        help="look back exactly N hours instead of since the last successful run")
+    scrape.add_argument("--full", action="store_true",
+                        help="use each search's configured window instead of scraping incrementally")
 
     backfill = sub.add_parser("backfill", help="fetch descriptions LinkedIn's search endpoint omits")
     _add_common(backfill)
@@ -71,21 +75,27 @@ def cmd_scrape(args) -> int:
         return 1
 
     legs = plan(selected)
-    if args.dry_run:
-        print(f"Would run {len(legs)} board calls from {args.config}:\n")
-        for search, term, board in legs:
-            kwargs = search.jobspy_kwargs(term, board)
-            extra = kwargs.get("google_search_term") or ""
-            print(f"  {search.name} · {board:<14} {term!r} @ {kwargs['location']}"
-                  f" (indeed_country={kwargs['country_indeed']}){' | google: ' + repr(extra) if extra else ''}")
-        return 0
-
     conn = connect(args.db)
     store = RawStore(conn)
     try:
+        if args.dry_run:
+            last_run_at = None if args.full else store.last_successful_run_at()
+            print(f"Would run {len(legs)} board calls from {args.config}")
+            print(f"Last successful run: {last_run_at or '(none — using configured windows)'}\n")
+            for search, term, board in legs:
+                window = (args.since_hours if args.since_hours is not None
+                          else resolve_window(search, last_run_at))
+                kwargs = search.jobspy_kwargs(term, board, hours_old=window)
+                extra = kwargs.get("google_search_term") or ""
+                print(f"  {search.name} · {board:<14} {term!r} @ {kwargs['location']}"
+                      f" · last {window}h"
+                      f"{' | google: ' + repr(extra) if extra else ''}")
+            return 0
+
         result = run_scrape(
             config, store, searches=selected,
             on_progress=lambda msg: print(msg, flush=True),
+            since_hours=args.since_hours, full=args.full,
             **({"pause": args.pause} if args.pause is not None else {}),
         )
         print(f"\nRun {result.run_id}: {result.status} — "

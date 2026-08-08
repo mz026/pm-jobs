@@ -1,0 +1,61 @@
+# What gets dropped, and what gets tagged.
+#
+# This file is the tuning surface for the review pass. Editing it changes the
+# prefs_hash recorded on each review run, so verdicts stay attributable to the
+# preferences that produced them.
+#
+# Nothing here deletes a posting. Dropped jobs stay in the raw store with the
+# rule that dropped them, so `pm-jobs review --drops` can show you what a rule
+# is costing you and a re-review can undo it.
+
+languages:
+  # A posting demanding fluency in any language outside this list is dropped.
+  # "X is a plus", "X courses offered", and working-rights wording are not
+  # requirements — the model is told this explicitly.
+  speak: [English, Mandarin]
+
+roles:
+  # Titles matched against these, case-insensitively. Boards match keywords
+  # loosely: without this filter the list fills with '.Net Developer',
+  # 'Senior Category Buyer', and 'Dyson Brand Ambassador'.
+  #
+  # A title containing "product" that matches nothing here is NOT dropped — it
+  # is passed to the model to adjudicate. That safety net exists because this
+  # list missed real roles on first contact with the data: 'Senior
+  # productmanager' (Dutch compound spelling), 'Director Technical Product
+  # Management', 'Chief Product & Technology Officer', and a posting titled
+  # 'Senior Product Ownwer' that no word list will ever catch.
+  include:
+    - product manager
+    - productmanager
+    - product management
+    - product owner
+    - productowner
+    - product lead
+    - lead product
+    - principal product
+    - head of product
+    - director of product
+    - vp product
+    - group product manager
+    - technical product manager
+    - chief product officer
+
+tags:
+  consumer: >
+    Consumer-facing product, or a role that clearly leverages consumer product
+    experience. Marketplaces and two-sided platforms count when at least one
+    side is ordinary consumers. Pure B2B, internal tooling, and enterprise
+    sales-led products do not.
+  ed-tech: >
+    Education, learning, training, skills, or ed-tech. Includes corporate
+    learning platforms and anything whose users are learners or teachers.
+  gamification: >
+    Gamification or engagement design — points, streaks, levels, rewards,
+    progression systems, habit loops, or a product whose core value depends on
+    sustained daily engagement.
+
+review:
+  model: claude-sonnet-5
+  effort: low
+  summary_sentences: 3

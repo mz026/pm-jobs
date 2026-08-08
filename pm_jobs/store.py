@@ -91,6 +91,60 @@ CREATE TABLE IF NOT EXISTS job_sightings (
 CREATE INDEX IF NOT EXISTS idx_sightings_job ON job_sightings(board, board_job_id);
 CREATE INDEX IF NOT EXISTS idx_sightings_run ON job_sightings(run_id);
 
+-- Yours. Permanent. Never regenerated.
+--
+-- Deliberately keyed on (board, board_job_id) rather than raw_jobs.id: raw_jobs
+-- is versioned, so a re-listed posting writes a new row, and state stored
+-- against a version would be orphaned the moment a board re-lists the job.
+CREATE TABLE IF NOT EXISTS job_state (
+    board         TEXT NOT NULL,
+    board_job_id  TEXT NOT NULL,
+    is_read       INTEGER NOT NULL DEFAULT 0,
+    is_favorite   INTEGER NOT NULL DEFAULT 0,
+    read_at       TEXT,
+    favorited_at  TEXT,
+    PRIMARY KEY (board, board_job_id)
+);
+
+CREATE TABLE IF NOT EXISTS review_runs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT,
+    model        TEXT NOT NULL,
+    prefs_hash   TEXT NOT NULL,          -- which preferences produced these verdicts
+    considered   INTEGER NOT NULL DEFAULT 0,
+    prefiltered  INTEGER NOT NULL DEFAULT 0,
+    judged       INTEGER NOT NULL DEFAULT 0,
+    kept         INTEGER NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL DEFAULT 'running'
+);
+
+-- The model's. Regenerable. One row per (posting version, review run).
+--
+-- Dropped postings are stored too, with the rule that dropped them. Without
+-- that a too-aggressive filter is invisible — you would only ever see what
+-- survived, never what it cost you.
+CREATE TABLE IF NOT EXISTS job_reviews (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        INTEGER NOT NULL REFERENCES review_runs(id),
+    board         TEXT NOT NULL,
+    board_job_id  TEXT NOT NULL,
+    raw_job_id    INTEGER NOT NULL REFERENCES raw_jobs(id),  -- exact version reviewed
+    stage         TEXT NOT NULL,          -- prefilter | judged | error
+    verdict       TEXT NOT NULL,          -- keep | drop
+    drop_reason   TEXT,
+    languages     TEXT NOT NULL DEFAULT '[]',  -- what the model read as required
+    tags          TEXT NOT NULL DEFAULT '[]',
+    summary       TEXT,
+    model         TEXT,
+    error         TEXT,
+    reviewed_at   TEXT NOT NULL,
+    UNIQUE (raw_job_id, run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reviews_job ON job_reviews(board, board_job_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_raw ON job_reviews(raw_job_id);
+
 CREATE TABLE IF NOT EXISTS backfill_attempts (
     board        TEXT NOT NULL,
     board_job_id TEXT NOT NULL,
@@ -370,6 +424,19 @@ class RawStore:
 
     # --- reads ------------------------------------------------------------
 
+    def last_successful_run_at(self) -> str | None:
+        """When the most recent run that actually stored something finished.
+
+        A failed run is not a watermark: if last night's scrape died, tonight's
+        must still cover last night's postings. 'partial' counts — some legs
+        succeeded, and the ones that failed are recorded per task.
+        """
+        row = self.conn.execute(
+            """SELECT MAX(COALESCE(finished_at, started_at)) AS at
+               FROM scrape_runs WHERE status IN ('ok', 'partial')"""
+        ).fetchone()
+        return row["at"] if row else None
+
     def recent_runs(self, limit: int = 10) -> list[sqlite3.Row]:
         return self.conn.execute(
             """SELECT r.*,
@@ -439,6 +506,16 @@ class RawStore:
                          FROM raw_jobs GROUP BY board, board_job_id)
                    GROUP BY board ORDER BY postings DESC"""
             ).fetchall(),
+            "reviewed": one(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT board, board_job_id FROM job_reviews)"
+            ),
+            "kept": one(
+                """SELECT COUNT(*) FROM (
+                       SELECT v.verdict FROM job_reviews v
+                       JOIN (SELECT board, board_job_id, MAX(id) mid FROM job_reviews GROUP BY 1, 2) m
+                         ON m.mid = v.id
+                       WHERE v.verdict = 'keep')"""
+            ),
             "backfill_failed": one(
                 f"SELECT COUNT(*) FROM backfill_attempts WHERE status = 'error' AND attempts >= {MAX_BACKFILL_ATTEMPTS}"
             ),

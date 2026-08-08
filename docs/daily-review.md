@@ -9,19 +9,20 @@ Supersedes `docs/stage-3-ranking.md` (resume-based ranking, dropped).
 
 ## Steps
 
-- [ ] **1. Incremental scrape window**
-  - [ ] Compute `hours_old` from the last *successful* run (`scrape_runs.status = 'ok'`)
-  - [ ] Add overlap margin; floor at 24h, cap at 72h
-  - [ ] `--since-hours N` to override, `--full` for the old fixed window
-- [ ] **2. Schema: state and reviews**
-  - [ ] `job_state` table (read, favorite) + migration
-  - [ ] `job_reviews` table (verdict, tags, summary) + migration
-  - [ ] `pending_review()` query — newest raw version with no review for that version
-- [ ] **3. `preferences.yaml`** — languages, tag definitions, model config, loader
-- [ ] **4. Deterministic pre-filters** (no model call)
-  - [ ] Description-language detection → drop Dutch-written
-  - [ ] Product-role title match → drop non-product roles
-  - [ ] Record both as `job_reviews` rows with `stage='prefilter'`
+- [x] **1. Incremental scrape window**
+  - [x] Compute `hours_old` from the last *successful* run (`scrape_runs.status = 'ok'`)
+  - [x] Add overlap margin; floor at 24h, cap at 72h
+  - [x] `--since-hours N` to override, `--full` for the old fixed window
+- [x] **2. Schema: state and reviews**
+  - [x] `job_state` table (read, favorite) + migration
+  - [x] `job_reviews` table (verdict, tags, summary) + migration
+  - [x] `pending_review()` query — newest raw version with no review for that version
+- [x] **3. `preferences.yaml`** — languages, tag definitions, model config, loader
+- [x] **4. Deterministic pre-filters** (no model call)
+  - [x] Description-language detection → drop Dutch-written
+  - [x] Product-role title match → drop non-product roles
+  - [x] Ambiguous titles (mention "product", match no phrase) deferred to the model, not dropped
+  - [ ] Record both as `job_reviews` rows with `stage='prefilter'` *(lands with step 5)*
 - [ ] **5. AI review pass**
   - [ ] Anthropic client, cached prefix, structured output schema
   - [ ] Per-job call: verdict + tags + summary

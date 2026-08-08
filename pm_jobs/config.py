@@ -55,14 +55,19 @@ class Search:
         """
         return list(itertools.product(self.terms, self.boards))
 
-    def jobspy_kwargs(self, term: str, board: str) -> dict:
+    def jobspy_kwargs(self, term: str, board: str, hours_old: int | None = None) -> dict:
+        """Build the jobspy call for one leg.
+
+        `hours_old` overrides the configured window — a scrape that runs daily
+        only needs to look back to the previous run, not the full window.
+        """
         kwargs = {
             "site_name": [board],
             "search_term": term,
             "location": self.location.query,
             "country_indeed": self.location.indeed_country,
             "results_wanted": self.results_wanted,
-            "hours_old": self.hours_old,
+            "hours_old": self.hours_old if hours_old is None else hours_old,
             "distance": self.distance,
             "description_format": "markdown",
             "verbose": 0,
