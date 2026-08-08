@@ -28,11 +28,37 @@ uv sync
 
 uv run pm-jobs searches         # what is configured
 uv run pm-jobs scrape --dry-run # what would be hit, without hitting it
-uv run pm-jobs scrape           # run everything enabled
+uv run pm-jobs scrape           # scrape, then backfill descriptions
 uv run pm-jobs scrape --search pm-north-holland
+uv run pm-jobs scrape --no-backfill
+uv run pm-jobs backfill         # descriptions only; --limit N, --retry-failed
 uv run pm-jobs runs             # recent runs; --show N for per-leg detail
 uv run pm-jobs stats            # what is in the store
 ```
+
+## Descriptions
+
+LinkedIn's search endpoint returns no job description — 0 of 56 postings on
+live data, while Indeed returned one for 58 of 58. Stage 3 cannot rank a job on
+its title, so descriptions are fetched from each job's own page.
+
+That fetch runs as its own pass after the scrape, not inside it. Speed is not
+the reason: it adds ~0.66s per posting, about 40s for a day's LinkedIn haul.
+The reason is blast radius — one request per job is the shape of traffic that
+gets rate-limited, and a throttled pass that can be resumed and retried without
+touching an already-committed scrape is worth more than the seconds it saves.
+
+`scrape` chains it automatically. A backfill failure never fails the scrape:
+the scrape's data is already committed by then. Postings that fail three times
+are treated as gone and skipped, so a dead posting is not retried forever;
+`backfill --retry-failed` overrides that.
+
+Enriched results are written as a **new content version**, never as an edit,
+and deliberately record no sighting — a sighting means a board's search
+returned the posting, and a backfill is not that.
+
+Descriptions arrive with `job_level`, `company_industry`, `job_type` and
+`job_function`, which stage 3 wants anyway.
 
 ## Tuning searches
 
@@ -68,7 +94,10 @@ sightings, so the store is safe to run on a schedule.
 
 ## Known gaps
 
-- **LinkedIn returns no job descriptions** (Indeed returns them for every row).
-  Ranking needs descriptions, so stage 2 must add a backfill pass. Fetching them
-  inline is ~10x slower and more ban-prone, hence the separate pass.
+- `pm_jobs/linkedin_details.py` depends on a **private** jobspy API
+  (`LinkedIn._get_job_details`), so `python-jobspy` is pinned. That module is
+  the only place that touches it and fails loudly if it moves — re-check it
+  before unpinning.
+- Boards disagree on field formats. Two are already reconciled at write time
+  (`job_type` spelling and multi-value joining); expect stage 2 to find more.
 - No scheduling yet — run it by hand until the search criteria stop moving.

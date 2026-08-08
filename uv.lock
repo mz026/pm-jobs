@@ -190,7 +190,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "python-jobspy", specifier = ">=1.1.82" },
+    { name = "python-jobspy", specifier = "==1.1.82" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 

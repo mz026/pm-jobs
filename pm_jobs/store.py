@@ -24,6 +24,7 @@ import json
 import math
 import sqlite3
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -85,7 +86,21 @@ CREATE TABLE IF NOT EXISTS job_sightings (
 
 CREATE INDEX IF NOT EXISTS idx_sightings_job ON job_sightings(board, board_job_id);
 CREATE INDEX IF NOT EXISTS idx_sightings_run ON job_sightings(run_id);
+
+CREATE TABLE IF NOT EXISTS backfill_attempts (
+    board        TEXT NOT NULL,
+    board_job_id TEXT NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    last_try_at  TEXT NOT NULL,
+    status       TEXT NOT NULL,          -- ok | error
+    error        TEXT,
+    PRIMARY KEY (board, board_job_id)
+);
 """
+
+# A posting that fails this many times is treated as gone (expired, pulled,
+# region-blocked) and skipped, so a dead posting cannot be retried forever.
+MAX_BACKFILL_ATTEMPTS = 3
 
 
 def utcnow() -> str:
@@ -93,10 +108,11 @@ def utcnow() -> str:
 
 
 def _jsonable(value: Any) -> Any:
-    """Make one pandas cell safe for json.dumps.
+    """Make one scraped cell safe for json.dumps.
 
-    pandas hands back NaN, NaT, numpy scalars and Timestamps; SQLite and JSON
-    want None, str, int, float, bool.
+    pandas hands back NaN, NaT, numpy scalars and Timestamps; jobspy's per-job
+    API hands back enum members and lists of them. SQLite and JSON want None,
+    str, int, float, bool.
     """
     if value is None:
         return None
@@ -106,6 +122,15 @@ def _jsonable(value: Any) -> Any:
         return value
     if isinstance(value, float):
         return value
+    if isinstance(value, Enum):
+        # jobspy enums carry a tuple of localized spellings; the search path
+        # stores the first ("fulltime"), so backfilled rows must match.
+        inner = value.value
+        return _jsonable(inner[0] if isinstance(inner, (list, tuple)) and inner else inner)
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
     # numpy scalars and pandas NA
     item = getattr(value, "item", None)
     if callable(item):
@@ -235,6 +260,78 @@ class RawStore:
         )
         return is_new
 
+    # --- backfill ---------------------------------------------------------
+
+    def jobs_needing_details(
+        self, board: str = "linkedin", limit: int | None = None, retry_failed: bool = False
+    ) -> list[sqlite3.Row]:
+        """Latest stored version of each posting that still has no description.
+
+        Only the newest version of a posting is considered: once a backfill has
+        written an enriched version, the posting drops out of this list.
+        """
+        attempt_clause = "" if retry_failed else (
+            " AND NOT EXISTS (SELECT 1 FROM backfill_attempts a"
+            "                 WHERE a.board = r.board AND a.board_job_id = r.board_job_id"
+            "                   AND a.status = 'error' AND a.attempts >= ?)"
+        )
+        params: list = [board]
+        if not retry_failed:
+            params.append(MAX_BACKFILL_ATTEMPTS)
+
+        sql = f"""
+            SELECT r.id, r.board, r.board_job_id, r.payload, r.title, r.company
+            FROM raw_jobs r
+            JOIN (SELECT board, board_job_id, MAX(id) AS newest
+                  FROM raw_jobs GROUP BY board, board_job_id) latest
+              ON latest.newest = r.id
+            WHERE r.board = ?
+              AND COALESCE(json_extract(r.payload, '$.description'), '') = ''
+              {attempt_clause}
+            ORDER BY r.id
+        """
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self.conn.execute(sql, params).fetchall()
+
+    def add_version(self, board: str, board_job_id: str, payload: dict) -> bool:
+        """Store an enriched version of a posting we already have.
+
+        Deliberately writes no sighting: a sighting means a board's search
+        returned this posting, and a backfill is not that.
+        """
+        digest = payload_hash(payload)
+        cur = self.conn.execute(
+            """INSERT OR IGNORE INTO raw_jobs
+               (board, board_job_id, payload_hash, payload, job_url, title, company, location, first_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                board,
+                board_job_id,
+                digest,
+                json.dumps(payload, ensure_ascii=False),
+                payload.get("job_url"),
+                payload.get("title"),
+                payload.get("company"),
+                payload.get("location"),
+                utcnow(),
+            ),
+        )
+        return cur.rowcount > 0
+
+    def record_attempt(self, board: str, board_job_id: str, status: str, error: str | None = None) -> None:
+        self.conn.execute(
+            """INSERT INTO backfill_attempts (board, board_job_id, attempts, last_try_at, status, error)
+               VALUES (?, ?, 1, ?, ?, ?)
+               ON CONFLICT (board, board_job_id) DO UPDATE SET
+                   attempts    = attempts + 1,
+                   last_try_at = excluded.last_try_at,
+                   status      = excluded.status,
+                   error       = excluded.error""",
+            (board, board_job_id, utcnow(), status, error),
+        )
+
     # --- reads ------------------------------------------------------------
 
     def recent_runs(self, limit: int = 10) -> list[sqlite3.Row]:
@@ -259,7 +356,16 @@ class RawStore:
             "distinct_postings": one("SELECT COUNT(*) FROM (SELECT DISTINCT board, board_job_id FROM raw_jobs)"),
             "sightings": one("SELECT COUNT(*) FROM job_sightings"),
             "by_board": self.conn.execute(
-                """SELECT board, COUNT(DISTINCT board_job_id) AS postings
-                   FROM raw_jobs GROUP BY board ORDER BY postings DESC"""
+                """SELECT r.board,
+                          COUNT(*) AS postings,
+                          SUM(COALESCE(json_extract(r.payload, '$.description'), '') <> '') AS with_description
+                   FROM raw_jobs r
+                   JOIN (SELECT board, board_job_id, MAX(id) AS newest
+                         FROM raw_jobs GROUP BY board, board_job_id) latest
+                     ON latest.newest = r.id
+                   GROUP BY r.board ORDER BY postings DESC"""
             ).fetchall(),
+            "backfill_failed": one(
+                f"SELECT COUNT(*) FROM backfill_attempts WHERE status = 'error' AND attempts >= {MAX_BACKFILL_ATTEMPTS}"
+            ),
         }

@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .backfill import run_backfill
 from .config import DEFAULT_CONFIG_PATH, ConfigError, load_config
 from .scrape import plan, run_scrape
 from .store import DEFAULT_DB_PATH, RawStore, connect
@@ -26,6 +27,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="run only this search (repeatable); default is every enabled search")
     scrape.add_argument("--dry-run", action="store_true", help="show what would be scraped, hit no boards")
     scrape.add_argument("--pause", type=float, default=None, help="seconds to wait between board calls")
+    scrape.add_argument("--no-backfill", action="store_true",
+                        help="skip the description backfill that normally follows a scrape")
+
+    backfill = sub.add_parser("backfill", help="fetch descriptions LinkedIn's search endpoint omits")
+    _add_common(backfill)
+    backfill.add_argument("--limit", type=int, default=None, help="fetch at most this many")
+    backfill.add_argument("--pause", type=float, default=None, help="seconds to wait between fetches")
+    backfill.add_argument("--retry-failed", action="store_true",
+                          help="also retry postings that already failed the maximum number of times")
 
     runs = sub.add_parser("runs", help="show recent scrape runs")
     _add_common(runs)
@@ -78,14 +88,43 @@ def cmd_scrape(args) -> int:
             on_progress=lambda msg: print(msg, flush=True),
             **({"pause": args.pause} if args.pause is not None else {}),
         )
+        print(f"\nRun {result.run_id}: {result.status} — "
+              f"{result.rows_returned} rows returned, {result.rows_new} new versions stored")
+        for task in result.tasks:
+            if not task.ok:
+                print(f"  failed: {task.search_name} · {task.term!r} · {task.board} — {task.error}",
+                      file=sys.stderr)
+
+        # Backfill runs on already-committed scrape data, so a failure here
+        # costs nothing that was just scraped and must not fail the scrape.
+        if not args.no_backfill:
+            print()
+            back = run_backfill(store, on_progress=lambda msg: print(msg, flush=True),
+                                **({"pause": args.pause} if args.pause is not None else {}))
+            print(back.summary())
+            if back.aborted:
+                print(f"  {back.aborted}", file=sys.stderr)
     finally:
         conn.close()
 
-    print(f"\nRun {result.run_id}: {result.status} — "
-          f"{result.rows_returned} rows returned, {result.rows_new} new versions stored")
-    for task in result.tasks:
-        if not task.ok:
-            print(f"  failed: {task.search_name} · {task.term!r} · {task.board} — {task.error}", file=sys.stderr)
+    return 0 if result.status == "ok" else 1
+
+
+def cmd_backfill(args) -> int:
+    conn = connect(args.db)
+    store = RawStore(conn)
+    try:
+        result = run_backfill(
+            store, limit=args.limit, retry_failed=args.retry_failed,
+            on_progress=lambda msg: print(msg, flush=True),
+            **({"pause": args.pause} if args.pause is not None else {}),
+        )
+    finally:
+        conn.close()
+
+    print(result.summary())
+    for error in result.errors[:5]:
+        print(f"  {error}", file=sys.stderr)
     return 0 if result.status == "ok" else 1
 
 
@@ -126,16 +165,25 @@ def cmd_stats(args) -> int:
         print(f"  distinct postings : {s['distinct_postings']}")
         print(f"  content versions  : {s['raw_versions']}")
         print(f"  sightings         : {s['sightings']}")
+        if s["backfill_failed"]:
+            print(f"  gave up on     : {s['backfill_failed']} (use `backfill --retry-failed`)")
         if s["by_board"]:
             print("  by board:")
             for row in s["by_board"]:
-                print(f"    {row['board']:<14} {row['postings']}")
+                print(f"    {row['board']:<14} {row['postings']:>4} postings, "
+                      f"{row['with_description']} with description")
     finally:
         conn.close()
     return 0
 
 
-COMMANDS = {"scrape": cmd_scrape, "runs": cmd_runs, "stats": cmd_stats, "searches": cmd_searches}
+COMMANDS = {
+    "scrape": cmd_scrape,
+    "backfill": cmd_backfill,
+    "runs": cmd_runs,
+    "stats": cmd_stats,
+    "searches": cmd_searches,
+}
 
 
 def main(argv: list[str] | None = None) -> int:
