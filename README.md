@@ -52,8 +52,8 @@ uv run pm-jobs stats               # what's in the store
 ```
 
 `--drops` is the one worth knowing. It's how you check whether a filter is
-costing you jobs — most usefully the language calls, which are the only
-judgment in the whole pipeline that can quietly lose you something real.
+costing you jobs — most usefully the language-requirement calls, which are the
+only judgment in the whole pipeline that can quietly lose you something real.
 
 <details>
 <summary>Every other command</summary>
@@ -102,9 +102,13 @@ model.
 
 | Filter | How | Effect on the current corpus |
 |---|---|---|
-| Description written in Dutch | Word-frequency detection | 13 of 149 |
-| Not a product role | Title match against `preferences.yaml` | 79 of 149 |
-| Requires a language you don't speak | Model | on the remainder |
+| **Written** in Dutch | Word-frequency detection — no model | 13 of 149 |
+| Not a product role | Title match against `preferences.yaml` — no model | 79 of 149 |
+| **Requires** a language you don't speak | Model | on the remainder |
+
+The first and third both concern language, and they are not the same question.
+*What language is this written in* is decidable by counting words. *What
+languages does this job demand of me* is not — see below.
 
 A title that mentions "product" but matches no configured phrase is **not**
 dropped — it goes to the model. That safety net exists because a strict word
@@ -113,7 +117,19 @@ list silently discarded four real roles on first contact with the data:
 Management`, `Chief Product & Technology Officer`, and one titled `Senior
 Product Ownwer` that no word list will ever catch.
 
-### Why the language call needs a model
+### Detecting the language a posting is written in — no model
+
+Counting function words: `het`, `een`, `van`, `de`, `en` against `the`, `and`,
+`you`, `for`, `with`. Not vocabulary — a Dutch tech posting is full of English
+(`Product Owner`, `agile`, `stakeholder`), so topic words would misfire
+constantly. Function words never get borrowed.
+
+Across the 149 stored descriptions the two groups don't overlap: the narrowest
+call is 45 markers apart. Ties and anything under 30 words return `unknown`,
+which is **kept** — a detector that discards jobs on thin evidence is worse
+than none, because the loss is silent.
+
+### Deciding which languages a posting requires — model
 
 29 postings mention Dutch, and the word means five different things:
 
