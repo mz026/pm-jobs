@@ -22,13 +22,14 @@ Supersedes `docs/stage-3-ranking.md` (resume-based ranking, dropped).
   - [x] Description-language detection → drop Dutch-written
   - [x] Product-role title match → drop non-product roles
   - [x] Ambiguous titles (mention "product", match no phrase) deferred to the model, not dropped
-  - [ ] Record both as `job_reviews` rows with `stage='prefilter'` *(lands with step 5)*
-- [ ] **5. AI review pass**
-  - [ ] Anthropic client, cached prefix, structured output schema
-  - [ ] Per-job call: verdict + tags + summary
-  - [ ] Per-job failures recorded, never abort the run
-  - [ ] Idempotent — re-running reviews nothing already reviewed
-- [ ] **6. `pm-jobs review` CLI** — `--limit`, `--dry-run`, `--re-review`
+  - [x] Record both as `job_reviews` rows with `stage='prefilter'`
+- [x] **5. AI review pass**
+  - [x] Anthropic client, cached prefix, structured output schema
+  - [x] Per-job call: verdict + tags + summary
+  - [x] Per-job failures recorded and kept, never abort the run
+  - [x] Auth/model errors abort instead — every job would fail identically
+  - [x] Idempotent — re-running reviews nothing already reviewed
+- [x] **6. `pm-jobs review` CLI** — `--limit`, `--dry-run`, `--re-review`, `--drops`
 - [ ] **7. Cross-board dedup** — normalized company + exact title, link duplicates
 - [ ] **8. Web UI**
   - [ ] Server + templates, three views (unread / favorite / read)

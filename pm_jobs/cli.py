@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from .backfill import run_backfill
 from .config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from .preferences import DEFAULT_PREFERENCES_PATH, load_preferences
+from .prefilter import prefilter
+from .review import run_review
+from .reviewstore import ReviewStore
 from .scrape import plan, resolve_window, run_scrape
 from .store import DEFAULT_DB_PATH, RawStore, connect
 
@@ -40,6 +45,18 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--pause", type=float, default=None, help="seconds to wait between fetches")
     backfill.add_argument("--retry-failed", action="store_true",
                           help="also retry postings that already failed the maximum number of times")
+
+    review = sub.add_parser("review", help="read new postings, drop and tag them")
+    _add_common(review)
+    review.add_argument("--prefs", type=Path, default=DEFAULT_PREFERENCES_PATH)
+    review.add_argument("--limit", type=int, default=None, help="review at most this many")
+    review.add_argument("--dry-run", action="store_true",
+                        help="run the deterministic prefilters only; make no model calls")
+    review.add_argument("--re-review", action="store_true",
+                        help="discard every verdict and review everything again "
+                             "(read and favorite state is untouched)")
+    review.add_argument("--drops", action="store_true",
+                        help="show what has been dropped, and why, instead of reviewing")
 
     runs = sub.add_parser("runs", help="show recent scrape runs")
     _add_common(runs)
@@ -138,6 +155,60 @@ def cmd_backfill(args) -> int:
     return 0 if result.status == "ok" else 1
 
 
+def cmd_review(args) -> int:
+    prefs = load_preferences(args.prefs)
+    conn = connect(args.db)
+    store = ReviewStore(conn)
+    try:
+        if args.drops:
+            rows = store.drop_reasons()
+            if not rows:
+                print("Nothing dropped yet. Try: pm-jobs review")
+                return 0
+            total = sum(r["n"] for r in rows)
+            print(f"{total} postings dropped:\n")
+            for row in rows:
+                print(f"  {row['reason']:<44} {row['n']}")
+            print("\nNothing is deleted — `pm-jobs review --re-review` re-decides all of it.")
+            return 0
+
+        if args.re_review:
+            n = store.clear_reviews()
+            print(f"Discarded {n} verdicts. Read and favorite state kept.")
+
+        pending = store.pending(limit=args.limit)
+        if args.dry_run:
+            counts: dict[str, int] = {}
+            for job in pending:
+                description = json.loads(job["payload"]).get("description")
+                pre = prefilter(job["title"], description, prefs)
+                key = pre.reason or ("keep" if pre.role_certain else "keep (model confirms role)")
+                counts[key] = counts.get(key, 0) + 1
+            print(f"{len(pending)} pending, prefilter only (no model calls):\n")
+            for key, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+                print(f"  {key:<34} {n}")
+            reaching = sum(n for k, n in counts.items() if k.startswith("keep"))
+            print(f"\nWould reach {prefs.model}: {reaching}")
+            return 0
+
+        result = run_review(store, prefs, limit=args.limit,
+                            on_progress=lambda msg: print(msg, flush=True))
+    finally:
+        conn.close()
+
+    print("\n" + result.summary())
+    if result.judged:
+        print(f"tokens: {result.input_tokens} in ({result.cached_tokens} cached), "
+              f"{result.output_tokens} out — about ${result.cost_estimate(prefs.model):.2f}")
+    for error in result.errors[:5]:
+        print(f"  {error}", file=sys.stderr)
+    if result.aborted:
+        print(f"\n{result.aborted}", file=sys.stderr)
+        print("Set ANTHROPIC_API_KEY, or run `ant auth login`.", file=sys.stderr)
+        return 2
+    return 0 if result.status == "ok" else 1
+
+
 def cmd_runs(args) -> int:
     conn = connect(args.db)
     store = RawStore(conn)
@@ -199,6 +270,7 @@ def cmd_stats(args) -> int:
 COMMANDS = {
     "scrape": cmd_scrape,
     "backfill": cmd_backfill,
+    "review": cmd_review,
     "runs": cmd_runs,
     "stats": cmd_stats,
     "searches": cmd_searches,
