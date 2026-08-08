@@ -1,0 +1,32 @@
+# Search definitions for the PM job scanner.
+#
+# Each search names one place and one set of terms. The three jobspy location
+# knobs (location, google_search_term, country_indeed) are all derived from the
+# `location` block below, so they can never drift apart when you retune.
+#
+# Edit freely — this file is the tuning surface. No Python changes needed.
+
+defaults:
+  boards: [linkedin, indeed]
+  results_wanted: 50
+  hours_old: 72
+  distance: 25
+  # LinkedIn descriptions are fetched by a separate backfill pass, not inline:
+  # inline fetching is ~10x slower and more ban-prone.
+  fetch_descriptions: false
+
+searches:
+  - name: pm-north-holland
+    enabled: true
+    terms:
+      - product manager
+      - senior product manager
+      - technical product manager
+    location:
+      # `query` is what gets sent to the boards. `region`/`country` are the
+      # canonical labels stage 2 normalizes against and stage 3 filters on.
+      query: North Holland, NL
+      region: North Holland
+      country: Netherlands
+      # jobspy's Indeed-specific country key. Must match `country` above.
+      indeed_country: netherlands
