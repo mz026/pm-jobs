@@ -172,6 +172,15 @@ def cmd_stats(args) -> int:
             for row in s["by_board"]:
                 print(f"    {row['board']:<14} {row['postings']:>4} postings, "
                       f"{row['with_description']} with description")
+
+        f = store.freshness()
+        print(f"\n  posting dates     : {f['with_date']} of {f['postings']} report one")
+        if f["without_date"]:
+            print(f"    undated         : {f['without_date']}"
+                  f" ({f['undated_and_censored']} first seen in the earliest run,"
+                  f" so their age is only a lower bound)")
+        for row in f["by_date"]:
+            print(f"    {row['day']:<16} {row['postings']}")
     finally:
         conn.close()
     return 0

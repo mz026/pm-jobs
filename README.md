@@ -92,6 +92,24 @@ it say now" and "how long has it been up" without guessing.
 Re-running an unchanged scrape stores zero new versions but still records
 sightings, so the store is safe to run on a schedule.
 
+## Freshness
+
+Applying early matters, so a posting's age is a first-class signal and
+`date_posted` is a promoted, indexed column rather than a value buried in the
+payload JSON.
+
+It cannot be trusted on its own. On live data: Indeed reported a date for 58 of
+58 postings, LinkedIn for 46 of 57 — so roughly a fifth of LinkedIn postings
+have no date at all. It is day-resolution, so it cannot order postings within a
+day. And boards contradict themselves: a 72-hour search returned a posting
+dated 39 days earlier.
+
+Ranking should therefore use `date_posted` when present and fall back to the
+posting's earliest sighting, with one caveat the store surfaces in `stats`: for
+postings already live when the scanner first ran, "first seen" is only a *lower*
+bound on age, so an old job can look brand new. That bias shrinks with every
+run, and only affects postings carried over from the first one.
+
 ## Known gaps
 
 - `pm_jobs/linkedin_details.py` depends on a **private** jobspy API

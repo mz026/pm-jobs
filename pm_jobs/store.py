@@ -66,11 +66,15 @@ CREATE TABLE IF NOT EXISTS raw_jobs (
     title         TEXT,
     company       TEXT,
     location      TEXT,
+    date_posted   TEXT,                  -- board-reported posting date, day resolution
     first_seen_at TEXT NOT NULL,
     UNIQUE (board, board_job_id, payload_hash)
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_board_job ON raw_jobs(board, board_job_id);
+-- idx_raw_date_posted is created in _migrate(), after the column is guaranteed
+-- to exist: CREATE TABLE IF NOT EXISTS does not add columns to an older table,
+-- so indexing here would fail on any database created before date_posted.
 
 CREATE TABLE IF NOT EXISTS job_sightings (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,11 +165,28 @@ def payload_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring an older database up to the current schema.
+
+    The raw store is append-only and expensive to rebuild — it is the one thing
+    that cannot be regenerated without re-scraping — so schema changes migrate
+    in place rather than asking for a fresh scrape.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(raw_jobs)")}
+    if "date_posted" not in columns:
+        conn.execute("ALTER TABLE raw_jobs ADD COLUMN date_posted TEXT")
+        # Promote the value already sitting in every stored payload.
+        conn.execute("UPDATE raw_jobs SET date_posted = json_extract(payload, '$.date_posted')")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_date_posted ON raw_jobs(date_posted)")
+    conn.commit()
+
+
 def connect(db_path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
 
 
@@ -231,8 +252,9 @@ class RawStore:
 
         cur = self.conn.execute(
             """INSERT OR IGNORE INTO raw_jobs
-               (board, board_job_id, payload_hash, payload, job_url, title, company, location, first_seen_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (board, board_job_id, payload_hash, payload, job_url, title, company, location,
+                date_posted, first_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 board,
                 board_job_id,
@@ -242,6 +264,7 @@ class RawStore:
                 payload.get("title"),
                 payload.get("company"),
                 payload.get("location"),
+                payload.get("date_posted"),
                 seen_at,
             ),
         )
@@ -315,8 +338,9 @@ class RawStore:
         digest = payload_hash(payload)
         cur = self.conn.execute(
             """INSERT OR IGNORE INTO raw_jobs
-               (board, board_job_id, payload_hash, payload, job_url, title, company, location, first_seen_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (board, board_job_id, payload_hash, payload, job_url, title, company, location,
+                date_posted, first_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 board,
                 board_job_id,
@@ -326,6 +350,7 @@ class RawStore:
                 payload.get("title"),
                 payload.get("company"),
                 payload.get("location"),
+                payload.get("date_posted"),
                 utcnow(),
             ),
         )
@@ -358,6 +383,44 @@ class RawStore:
         return self.conn.execute(
             "SELECT * FROM scrape_tasks WHERE run_id = ? ORDER BY id", (run_id,)
         ).fetchall()
+
+    def freshness(self) -> dict[str, Any]:
+        """How well we can tell a posting's age.
+
+        Boards report `date_posted` inconsistently, so stage 3 needs a fallback:
+        when it is missing, the earliest sighting is the best available proxy.
+        That proxy has a catch worth surfacing — for postings already live when
+        the scanner first ran, "first seen" is only a lower bound on age, so a
+        three-week-old job can look brand new.
+        """
+        # Censoring is a question about *which run* first saw a posting, not about
+        # clock times: a row's first_seen_at is always a moment after its run began.
+        row = self.conn.execute(
+            """WITH per_posting AS (
+                   SELECT board, board_job_id, MAX(date_posted) AS date_posted
+                   FROM raw_jobs GROUP BY board, board_job_id
+               ), first_run AS (
+                   SELECT board, board_job_id, MIN(run_id) AS run_id
+                   FROM job_sightings GROUP BY board, board_job_id
+               )
+               SELECT COUNT(*) AS postings,
+                      SUM(p.date_posted IS NOT NULL) AS with_date,
+                      SUM(p.date_posted IS NULL
+                          AND f.run_id = (SELECT MIN(id) FROM scrape_runs)) AS undated_and_censored
+               FROM per_posting p LEFT JOIN first_run f USING (board, board_job_id)"""
+        ).fetchone()
+        return {
+            "postings": row["postings"],
+            "with_date": row["with_date"] or 0,
+            "without_date": (row["postings"] or 0) - (row["with_date"] or 0),
+            "undated_and_censored": row["undated_and_censored"] or 0,
+            "by_date": self.conn.execute(
+                """SELECT COALESCE(date_posted, '(none)') AS day, COUNT(*) AS postings
+                   FROM (SELECT board, board_job_id, MAX(date_posted) AS date_posted
+                         FROM raw_jobs GROUP BY board, board_job_id)
+                   GROUP BY day ORDER BY day DESC"""
+            ).fetchall(),
+        }
 
     def stats(self) -> dict[str, Any]:
         one = lambda sql: self.conn.execute(sql).fetchone()[0]  # noqa: E731
