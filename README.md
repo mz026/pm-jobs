@@ -9,11 +9,19 @@ page with unread / favorite / read views.
 
 ```bash
 uv sync
-export ANTHROPIC_API_KEY=...     # or: ant auth login
-
-uv run pm-jobs daily             # scrape → backfill descriptions → review
-uv run pm-jobs web               # http://localhost:8000
+# In Claude Code:  /pm-jobs-daily      ← no API key needed
+uv run pm-jobs web                     # http://localhost:8000
 ```
+
+The reading can come from either the Claude Code session you invoke it from, or
+from the API. Same instructions, same policy, same storage — the difference is
+setup and billing, not behaviour.
+
+| | Skill (`/pm-jobs-daily`) | API (`pm-jobs daily`) |
+|---|---|---|
+| Needs an API key | no | yes |
+| Runs unattended (cron) | no | yes |
+| Cost | Claude Code context | ~$8/month |
 
 ## The one rule
 
@@ -30,13 +38,16 @@ small model errs, and its mistakes have to be recoverable.
 ## Commands
 
 ```bash
-uv run pm-jobs daily             # the whole chain
-uv run pm-jobs web               # the page you read
+uv run pm-jobs daily               # scrape → backfill → review (API)
+uv run pm-jobs daily --no-review   # …leaving the judging to the skill
+uv run pm-jobs web                 # the page you read
 
-uv run pm-jobs scrape            # scrape only; --full, --since-hours N, --dry-run
-uv run pm-jobs backfill          # LinkedIn descriptions only
-uv run pm-jobs review            # review only; --dry-run costs nothing
-uv run pm-jobs review --drops    # what got dropped, and why
+uv run pm-jobs scrape              # --full, --since-hours N, --dry-run
+uv run pm-jobs backfill            # LinkedIn descriptions only
+uv run pm-jobs review              # judge via the API; --dry-run costs nothing
+uv run pm-jobs review --export F   # emit a batch for an agent to judge
+uv run pm-jobs review --apply F    # store an agent's verdicts (validated)
+uv run pm-jobs review --drops      # what got dropped, and why
 uv run pm-jobs review --re-review  # re-decide everything (keeps read/favorite)
 
 uv run pm-jobs searches stats runs
