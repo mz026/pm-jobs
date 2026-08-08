@@ -1,121 +1,135 @@
 # pm-jobs
 
 A personal job scanner for one product manager. Not a general-purpose tool — it
-deliberately encodes one person's search criteria, experience, and preferences.
+deliberately encodes one person's criteria.
 
-## Pipeline
-
-1. **Scrape** job boards on a schedule and keep the raw output forever. ✅ done
-2. **Normalize + dedupe** into a clean `jobs` table. _next_
-3. **Filter + rank** against a resume and a preferences file. _planned_
-4. **Research** the top-ranked jobs automatically. _future_
-
-Work is tracked in [beads](https://github.com/steveyegge/beads): `bd list`.
-
-## The one rule
-
-**Raw scrape output is immutable and separate from everything downstream.**
-
-Search criteria and preferences both get retuned constantly. Because raw output
-is preserved, retuning dedup rules or ranking is a re-run over stored data —
-seconds, no network. If raw were thrown away, every tweak would mean re-scraping
-and eventually getting rate-limited.
-
-## Usage
+Once a day: scrape what's new since the last run, have a model read each
+posting and drop the ones you can't take, then read the survivors on a local
+page with unread / favorite / read views.
 
 ```bash
 uv sync
+export ANTHROPIC_API_KEY=...     # or: ant auth login
 
-uv run pm-jobs searches         # what is configured
-uv run pm-jobs scrape --dry-run # what would be hit, without hitting it
-uv run pm-jobs scrape           # scrape, then backfill descriptions
-uv run pm-jobs scrape --search pm-north-holland
-uv run pm-jobs scrape --no-backfill
-uv run pm-jobs backfill         # descriptions only; --limit N, --retry-failed
-uv run pm-jobs runs             # recent runs; --show N for per-leg detail
-uv run pm-jobs stats            # what is in the store
+uv run pm-jobs daily             # scrape → backfill descriptions → review
+uv run pm-jobs web               # http://localhost:8000
 ```
 
-## Descriptions
+## The one rule
 
-LinkedIn's search endpoint returns no job description — 0 of 56 postings on
-live data, while Indeed returned one for 58 of 58. Stage 3 cannot rank a job on
-its title, so descriptions are fetched from each job's own page.
+**Nothing is ever deleted.** The raw store is append-only, and a "drop" is a
+verdict written alongside a posting, never a removal. So a filter that's too
+aggressive is a query away from being found (`pm-jobs review --drops`), and
+re-deciding everything with a better prompt costs nothing because nothing is
+re-scraped.
 
-That fetch runs as its own pass after the scrape, not inside it. Speed is not
-the reason: it adds ~0.66s per posting, about 40s for a day's LinkedIn haul.
-The reason is blast radius — one request per job is the shape of traffic that
-gets rate-limited, and a throttled pass that can be resumed and retried without
-touching an already-committed scrape is worth more than the seconds it saves.
+That's also what makes a cheap model safe to use here. The judgment that
+matters — *does this job require a language I don't speak* — is exactly where a
+small model errs, and its mistakes have to be recoverable.
 
-`scrape` chains it automatically. A backfill failure never fails the scrape:
-the scrape's data is already committed by then. Postings that fail three times
-are treated as gone and skipped, so a dead posting is not retried forever;
-`backfill --retry-failed` overrides that.
+## Commands
 
-Enriched results are written as a **new content version**, never as an edit,
-and deliberately record no sighting — a sighting means a board's search
-returned the posting, and a backfill is not that.
+```bash
+uv run pm-jobs daily             # the whole chain
+uv run pm-jobs web               # the page you read
 
-Descriptions arrive with `job_level`, `company_industry`, `job_type` and
-`job_function`, which stage 3 wants anyway.
+uv run pm-jobs scrape            # scrape only; --full, --since-hours N, --dry-run
+uv run pm-jobs backfill          # LinkedIn descriptions only
+uv run pm-jobs review            # review only; --dry-run costs nothing
+uv run pm-jobs review --drops    # what got dropped, and why
+uv run pm-jobs review --re-review  # re-decide everything (keeps read/favorite)
 
-## Tuning searches
+uv run pm-jobs searches stats runs
+uv run python tests/run_all.py
+```
 
-Everything tunable lives in `searches.yaml`. No Python edits.
+## Tuning
 
-Location is stated **once** per search. jobspy accepts location three different
-ways (`location`, `google_search_term`, `country_indeed`) and silently searches
-the wrong place if they disagree, so all three are derived from that one block.
+Two files, no Python edits.
 
-Scraping does **not** filter by region. Boards return nearby jobs outside the
-target area, and those are stored too — widening from "North Holland" to
-"Randstad" later then re-filters data already on disk instead of forcing a
-re-scrape. Region filtering happens in stage 3.
+**`searches.yaml`** — terms, boards, location, window. Location is stated once
+per search; jobspy accepts it three different ways and silently searches the
+wrong place if they disagree, so all three are derived from one block.
+
+**`preferences.yaml`** — the languages you speak, the titles that count as
+product roles, and what each tag means.
+
+## What gets dropped
+
+Three filters. Two are deterministic and cost nothing; only the third needs a
+model.
+
+| Filter | How | Effect on the current corpus |
+|---|---|---|
+| Description written in Dutch | Word-frequency detection | 13 of 149 |
+| Not a product role | Title match against `preferences.yaml` | 79 of 149 |
+| Requires a language you don't speak | Model | on the remainder |
+
+A title that mentions "product" but matches no configured phrase is **not**
+dropped — it goes to the model. That safety net exists because a strict word
+list silently discarded four real roles on first contact with the data:
+`Senior productmanager` (Dutch compound), `Director Technical Product
+Management`, `Chief Product & Technology Officer`, and one titled `Senior
+Product Ownwer` that no word list will ever catch.
+
+### Why the language call needs a model
+
+29 postings mention Dutch, and the word means five different things:
+
+| What the posting says | Correct call |
+|---|---|
+| "Vloeiend in Nederlands en Engels" | Drop — real requirement |
+| "Fluent in English; Dutch **is a plus**" | Keep |
+| "full **Dutch/EU working rights**" | Keep — visa, not language |
+| "(Dutch) **courses**" in the benefits | Keep — a perk |
+| "expertise in **Dutch pension regulation**" | Keep — domain knowledge |
+
+A keyword match drops all 29, including roles you could take today.
 
 ## Storage
 
-SQLite (`pm_jobs.db`, gitignored). Four tables:
+SQLite (`pm_jobs.db`, gitignored).
 
-| Table | Answers |
-|---|---|
-| `scrape_runs` | when did we scrape, did the run finish |
-| `scrape_tasks` | how did each (search, term, board) leg go, including failures |
-| `raw_jobs` | what did a posting say — one row per distinct *version* |
-| `job_sightings` | when did we see a posting — one row per observation |
+| Table | Holds | Regenerable? |
+|---|---|---|
+| `raw_jobs` | One row per distinct content version of a posting | No — the only thing that needs re-scraping |
+| `job_sightings` | One row per observation | No |
+| `job_reviews` | The model's verdicts, tags, summaries | Yes — thrown away on `--re-review` |
+| `job_state` | **Yours**: read, favorite | No — never regenerated |
+| `scrape_runs` / `scrape_tasks` / `review_runs` | Run history, including failures | — |
 
-`raw_jobs` and `job_sightings` are split on purpose. A posting seen on five days
-with unchanged text is one `raw_jobs` row and five sightings; if a salary appears
-on day three, that becomes a second `raw_jobs` row. Stage 2 gets both "what does
-it say now" and "how long has it been up" without guessing.
+`job_state` is separate from `job_reviews` so you can re-review with a better
+prompt without wiping which jobs you've read. Both key on
+`(board, board_job_id)` rather than `raw_jobs.id`, which is versioned — state
+stored against a version would be orphaned the moment a board re-lists a job.
 
-Re-running an unchanged scrape stores zero new versions but still records
-sightings, so the store is safe to run on a schedule.
+## Duplicates
+
+The same posting appears on both boards about 7% of the time. They're **linked,
+not merged**: one row carrying both source links, and read/favorite applied to
+every copy. Without that, marking one copy read strands its twin in `unread`
+permanently.
+
+Matching is normalized company + exact title, which caught all 8 known pairs
+with no false positives. No fuzzy matching.
 
 ## Freshness
 
-Applying early matters, so a posting's age is a first-class signal and
-`date_posted` is a promoted, indexed column rather than a value buried in the
-payload JSON.
+Each run asks the boards for the window since the last *successful* run — a
+failed run is not a watermark. The window is floored at 24h and given 6 hours of
+overlap, because jobspy filters on a board's posting date, not on when a posting
+became visible in search. The overlap is free: an unchanged posting hashes
+identically and stores nothing.
 
-It cannot be trusted on its own. On live data: Indeed reported a date for 58 of
-58 postings, LinkedIn for 46 of 57 — so roughly a fifth of LinkedIn postings
-have no date at all. It is day-resolution, so it cannot order postings within a
-day. And boards contradict themselves: a 72-hour search returned a posting
-dated 39 days earlier.
-
-Ranking should therefore use `date_posted` when present and fall back to the
-posting's earliest sighting, with one caveat the store surfaces in `stats`: for
-postings already live when the scanner first ran, "first seen" is only a *lower*
-bound on age, so an old job can look brand new. That bias shrinks with every
-run, and only affects postings carried over from the first one.
+Sorting uses each posting's **earliest** sighting. Using the latest would send
+every job still live on the boards back to the top of `unread` every day.
 
 ## Known gaps
 
-- `pm_jobs/linkedin_details.py` depends on a **private** jobspy API
+- `pm_jobs/linkedin_details.py` uses a **private** jobspy API
   (`LinkedIn._get_job_details`), so `python-jobspy` is pinned. That module is
-  the only place that touches it and fails loudly if it moves — re-check it
-  before unpinning.
-- Boards disagree on field formats. Two are already reconciled at write time
-  (`job_type` spelling and multi-value joining); expect stage 2 to find more.
-- No scheduling yet — run it by hand until the search criteria stop moving.
+  the only place that touches it and fails loudly if it moves.
+- No salary anywhere — all postings returned empty salary fields.
+- LinkedIn omits `date_posted` for about a fifth of postings; those fall back to
+  first sighting, which for the first run is only a lower bound on age.
+- No scheduling yet — run `pm-jobs daily` by hand, or wrap it in launchd.
