@@ -29,6 +29,10 @@ Scrapes since the last successful run and fills in LinkedIn descriptions. It
 prints how many postings are now awaiting review. If that's zero, say so and
 stop — there is nothing to read.
 
+If this fails with `command not found`, a missing module, or a missing
+interpreter, the project isn't installed. Stop and tell the user to run
+`/pm-jobs-setup` — don't try to install anything from here.
+
 ## 2. Export a batch
 
 ```bash

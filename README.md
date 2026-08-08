@@ -27,8 +27,9 @@ uv run pm-jobs web        # http://localhost:8000
 That's the whole loop. Everything below is for when something needs
 investigating or retuning.
 
-First time only: `uv sync`, then set your criteria in the two files under
-[Tuning](#tuning).
+First time only: run `/pm-jobs-setup` in Claude Code — it installs `uv`, the
+dependencies, and checks the config parses. Then set your criteria in the two
+files under [Tuning](#tuning).
 
 ## The one rule
 
