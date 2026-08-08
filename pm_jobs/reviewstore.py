@@ -17,6 +17,7 @@ import json
 import sqlite3
 from typing import Any, Iterable
 
+from .dedup import collapse, twins
 from .store import utcnow
 
 VIEWS = ("unread", "favorite", "read")
@@ -156,11 +157,19 @@ class ReviewStore:
 
     # --- the views --------------------------------------------------------
 
-    def list_jobs(self, view: str = "unread") -> list[dict[str, Any]]:
+    def list_jobs(self, view: str = "unread", fold_duplicates: bool = True) -> list[dict[str, Any]]:
         if view not in VIEW_FILTERS:
             raise ValueError(f"unknown view {view!r}; expected one of {', '.join(VIEWS)}")
         rows = self.conn.execute(LIST_SQL.format(where=VIEW_FILTERS[view])).fetchall()
-        return [{**dict(r), "tags": json.loads(r["tags"] or "[]")} for r in rows]
+        jobs = [{**dict(r), "tags": json.loads(r["tags"] or "[]")} for r in rows]
+        if not fold_duplicates:
+            return jobs
+        # Folding happens after filtering, which is safe because read and
+        # favorite are applied to every copy of a posting — the copies never
+        # disagree, so they never straddle two views.
+        folded = collapse(jobs)
+        folded.sort(key=lambda j: (j["first_seen_at"] or "", j["date_posted"] or ""), reverse=True)
+        return folded
 
     def counts(self) -> dict[str, int]:
         return {view: len(self.list_jobs(view)) for view in VIEWS}
@@ -174,11 +183,18 @@ class ReviewStore:
         )
 
     def mark_read(self, board: str, board_job_id: str, read: bool = True) -> None:
-        self._touch(board, board_job_id)
-        self.conn.execute(
-            "UPDATE job_state SET is_read = ?, read_at = ? WHERE board = ? AND board_job_id = ?",
-            (1 if read else 0, utcnow() if read else None, board, board_job_id),
-        )
+        """Applies to every copy of the posting, not just the one clicked.
+
+        Without this, marking the LinkedIn copy read leaves the Indeed copy in
+        `unread` forever — the exact failure that made dedup worth building.
+        """
+        stamp = utcnow() if read else None
+        for b, jid in twins(self.conn, board, board_job_id):
+            self._touch(b, jid)
+            self.conn.execute(
+                "UPDATE job_state SET is_read = ?, read_at = ? WHERE board = ? AND board_job_id = ?",
+                (1 if read else 0, stamp, b, jid),
+            )
         self.conn.commit()
 
     def toggle_favorite(self, board: str, board_job_id: str) -> bool:
@@ -188,9 +204,13 @@ class ReviewStore:
             (board, board_job_id),
         ).fetchone()
         new = 0 if row["is_favorite"] else 1
-        self.conn.execute(
-            "UPDATE job_state SET is_favorite = ?, favorited_at = ? WHERE board = ? AND board_job_id = ?",
-            (new, utcnow() if new else None, board, board_job_id),
-        )
+        stamp = utcnow() if new else None
+        for b, jid in twins(self.conn, board, board_job_id):
+            self._touch(b, jid)
+            self.conn.execute(
+                "UPDATE job_state SET is_favorite = ?, favorited_at = ?"
+                " WHERE board = ? AND board_job_id = ?",
+                (new, stamp, b, jid),
+            )
         self.conn.commit()
         return bool(new)

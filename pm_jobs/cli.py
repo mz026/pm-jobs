@@ -58,6 +58,17 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--drops", action="store_true",
                         help="show what has been dropped, and why, instead of reviewing")
 
+    daily = sub.add_parser("daily", help="scrape since the last run, backfill, and review")
+    _add_common(daily)
+    daily.add_argument("--prefs", type=Path, default=DEFAULT_PREFERENCES_PATH)
+    daily.add_argument("--full", action="store_true",
+                       help="use each search's configured window instead of scraping incrementally")
+
+    web = sub.add_parser("web", help="serve the unread / favorite / read views")
+    _add_common(web)
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8000)
+
     runs = sub.add_parser("runs", help="show recent scrape runs")
     _add_common(runs)
     runs.add_argument("--limit", type=int, default=10)
@@ -209,6 +220,60 @@ def cmd_review(args) -> int:
     return 0 if result.status == "ok" else 1
 
 
+def cmd_daily(args) -> int:
+    """One invocation: scrape what's new, fill in descriptions, review it.
+
+    Each stage runs on what the previous one committed, so a failure partway
+    through costs only the stages that hadn't run — the scrape is already
+    stored, and re-running picks up from there.
+    """
+    config = load_config(args.config)
+    prefs = load_preferences(args.prefs)
+    say = lambda msg: print(msg, flush=True)  # noqa: E731
+
+    conn = connect(args.db)
+    raw, reviews = RawStore(conn), ReviewStore(conn)
+    try:
+        say("── scrape ──")
+        scraped = run_scrape(config, raw, on_progress=say, full=args.full)
+        say(f"{scraped.rows_returned} rows returned, {scraped.rows_new} new versions stored")
+
+        say("\n── backfill ──")
+        back = run_backfill(raw, on_progress=say)
+        say(back.summary())
+
+        say("\n── review ──")
+        reviewed = run_review(reviews, prefs, on_progress=say)
+        say(reviewed.summary())
+        if reviewed.judged:
+            say(f"tokens: {reviewed.input_tokens} in ({reviewed.cached_tokens} cached), "
+                f"{reviewed.output_tokens} out — about ${reviewed.cost_estimate(prefs.model):.2f}")
+
+        counts = reviews.counts()
+        say(f"\n{counts['unread']} unread · {counts['favorite']} favorite · {counts['read']} read")
+        say("pm-jobs web")
+    finally:
+        conn.close()
+
+    if reviewed.aborted:
+        print(f"\n{reviewed.aborted}", file=sys.stderr)
+        print("Set ANTHROPIC_API_KEY, or run `ant auth login`.", file=sys.stderr)
+        return 2
+    return 0 if scraped.status == "ok" and reviewed.status == "ok" else 1
+
+
+def cmd_web(args) -> int:
+    from .web import create_app
+
+    conn = connect(args.db)
+    counts = ReviewStore(conn).counts()
+    conn.close()
+    print(f"  unread {counts['unread']} · favorite {counts['favorite']} · read {counts['read']}")
+    print(f"  http://{args.host}:{args.port}\n")
+    create_app(args.db).run(host=args.host, port=args.port)
+    return 0
+
+
 def cmd_runs(args) -> int:
     conn = connect(args.db)
     store = RawStore(conn)
@@ -271,6 +336,8 @@ COMMANDS = {
     "scrape": cmd_scrape,
     "backfill": cmd_backfill,
     "review": cmd_review,
+    "daily": cmd_daily,
+    "web": cmd_web,
     "runs": cmd_runs,
     "stats": cmd_stats,
     "searches": cmd_searches,

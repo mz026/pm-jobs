@@ -30,13 +30,15 @@ Supersedes `docs/stage-3-ranking.md` (resume-based ranking, dropped).
   - [x] Auth/model errors abort instead — every job would fail identically
   - [x] Idempotent — re-running reviews nothing already reviewed
 - [x] **6. `pm-jobs review` CLI** — `--limit`, `--dry-run`, `--re-review`, `--drops`
-- [ ] **7. Cross-board dedup** — normalized company + exact title, link duplicates
-- [ ] **8. Web UI**
-  - [ ] Server + templates, three views (unread / favorite / read)
-  - [ ] `/job/<board>/<id>/open` — mark read, redirect to source
-  - [ ] Favorite toggle
-- [ ] **9. `pm-jobs daily`** — scrape → backfill → review, one command
+- [x] **7. Cross-board dedup** — normalized company + exact title, link duplicates
+- [x] **8. Web UI**
+  - [x] Server + templates, three views (unread / favorite / read)
+  - [x] `/job/<board>/<id>/open` — mark read, redirect to source
+  - [x] Favorite toggle, and mark-unread to undo a read
+- [x] **9. `pm-jobs daily`** — scrape → backfill → review, one command
 - [ ] **10. Verify end to end** on real data, then measure a day's actual cost
+  - [x] Scrape, backfill, prefilter, dedup, and web verified on the real 149 postings
+  - [ ] Model pass — blocked on credentials (`ANTHROPIC_API_KEY` or `ant auth login`)
 
 ---
 

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block body %}
+  {% if not jobs %}
+    <p class="empty">
+      {% if view == 'unread' %}
+        Nothing unread. Run <code>pm-jobs daily</code> to scrape and review.
+      {% else %}
+        No {{ view }} jobs yet.
+      {% endif %}
+    </p>
+  {% endif %}
+
+  {% for job in jobs %}
+    <article class="job">
+      <h2>
+        {# Goes through /open so the click itself marks it read — no JavaScript,
+           and the state matches what you actually did. #}
+        <a href="{{ url_for('open_job', board=job.board, board_job_id=job.board_job_id) }}"
+           target="_blank" rel="noopener">{{ job.title }}</a>
+      </h2>
+      <div class="meta">
+        {{ job.company }}{% if job.location %} · {{ job.location }}{% endif %}
+        · {{ job.date_posted or 'undated' }}
+      </div>
+      {% if job.summary %}<p class="summary">{{ job.summary }}</p>{% endif %}
+      <div class="row">
+        {% for tag in job.tags %}<span class="tag">{{ tag }}</span>{% endfor %}
+        {% if job.sources | length > 1 %}
+          <span class="sources">
+            also on
+            {% for s in job.sources[1:] %}<a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.board }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+          </span>
+        {% endif %}
+        <form method="post"
+              action="{{ url_for('favorite', board=job.board, board_job_id=job.board_job_id) }}">
+          <input type="hidden" name="from" value="{{ view }}">
+          <button type="submit" class="{{ 'on' if job.is_favorite else '' }}">
+            {{ '★ favorite' if job.is_favorite else '☆ favorite' }}
+          </button>
+        </form>
+        {% if job.is_read %}
+          <form method="post"
+                action="{{ url_for('unread', board=job.board, board_job_id=job.board_job_id) }}">
+            <input type="hidden" name="from" value="{{ view }}">
+            <button type="submit">mark unread</button>
+          </form>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+{% endblock %}
