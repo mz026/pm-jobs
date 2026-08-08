@@ -1,6 +1,10 @@
 ---
 name: pm-jobs-daily
 description: Run the daily PM job scan — scrape new postings, read each one, drop the ones that don't fit, and tag and summarize the rest. Use when the user asks to check for new jobs, run the job scan, or refresh the job list.
+model: sonnet
+context: fork
+background: false
+allowed-tools: Bash(uv run pm-jobs:*), Read, Write
 ---
 
 # pm-jobs daily scan
@@ -10,6 +14,10 @@ deterministic filters, dedup, and validation; you answer the questions the
 posting can't be filtered on.
 
 Run from the repo root (`/Users/yanghsing/codes/toys/pm-jobs`).
+
+You are running in a forked context, so you have no conversation history —
+everything you need is in this file and in the batch files you export. Report
+back at the end; that report is all the user sees.
 
 ## 1. Scrape
 
