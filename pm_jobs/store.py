@@ -265,10 +265,16 @@ class RawStore:
     def jobs_needing_details(
         self, board: str = "linkedin", limit: int | None = None, retry_failed: bool = False
     ) -> list[sqlite3.Row]:
-        """Latest stored version of each posting that still has no description.
+        """Postings we have never obtained a description for.
 
-        Only the newest version of a posting is considered: once a backfill has
-        written an enriched version, the posting drops out of this list.
+        The test is "does *any* stored version have a description", not "does
+        the newest one". A board re-listing a posting with any field changed
+        writes a fresh search version, which never carries a description; asking
+        only about the newest version would re-fetch every repeat posting the
+        day after it was enriched.
+
+        The row returned is still the newest version, so the fetched description
+        merges into the freshest search data.
         """
         attempt_clause = "" if retry_failed else (
             " AND NOT EXISTS (SELECT 1 FROM backfill_attempts a"
@@ -286,7 +292,12 @@ class RawStore:
                   FROM raw_jobs GROUP BY board, board_job_id) latest
               ON latest.newest = r.id
             WHERE r.board = ?
-              AND COALESCE(json_extract(r.payload, '$.description'), '') = ''
+              AND NOT EXISTS (
+                    SELECT 1 FROM raw_jobs seen
+                    WHERE seen.board = r.board
+                      AND seen.board_job_id = r.board_job_id
+                      AND COALESCE(json_extract(seen.payload, '$.description'), '') <> ''
+              )
               {attempt_clause}
             ORDER BY r.id
         """
@@ -355,15 +366,15 @@ class RawStore:
             "raw_versions": one("SELECT COUNT(*) FROM raw_jobs"),
             "distinct_postings": one("SELECT COUNT(*) FROM (SELECT DISTINCT board, board_job_id FROM raw_jobs)"),
             "sightings": one("SELECT COUNT(*) FROM job_sightings"),
+            # Counted per posting, across all its versions — matching what
+            # backfill considers "done" — not per newest version.
             "by_board": self.conn.execute(
-                """SELECT r.board,
-                          COUNT(*) AS postings,
-                          SUM(COALESCE(json_extract(r.payload, '$.description'), '') <> '') AS with_description
-                   FROM raw_jobs r
-                   JOIN (SELECT board, board_job_id, MAX(id) AS newest
-                         FROM raw_jobs GROUP BY board, board_job_id) latest
-                     ON latest.newest = r.id
-                   GROUP BY r.board ORDER BY postings DESC"""
+                """SELECT board, COUNT(*) AS postings, SUM(has_description) AS with_description
+                   FROM (SELECT board, board_job_id,
+                                MAX(COALESCE(json_extract(payload, '$.description'), '') <> '')
+                                    AS has_description
+                         FROM raw_jobs GROUP BY board, board_job_id)
+                   GROUP BY board ORDER BY postings DESC"""
             ).fetchall(),
             "backfill_failed": one(
                 f"SELECT COUNT(*) FROM backfill_attempts WHERE status = 'error' AND attempts >= {MAX_BACKFILL_ATTEMPTS}"
