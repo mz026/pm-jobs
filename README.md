@@ -7,21 +7,28 @@ Once a day: scrape what's new since the last run, have a model read each
 posting and drop the ones you can't take, then read the survivors on a local
 page with unread / favorite / read views.
 
-```bash
-uv sync
-# In Claude Code:  /pm-jobs-daily      ← no API key needed
-uv run pm-jobs web                     # http://localhost:8000
+## Daily use
+
+Two steps. In Claude Code:
+
+```
+/pm-jobs-daily
 ```
 
-The reading can come from either the Claude Code session you invoke it from, or
-from the API. Same instructions, same policy, same storage — the difference is
-setup and billing, not behaviour.
+Scrapes what's new, reads each posting, drops what doesn't fit, tags and
+summarizes the rest. No API key — it runs on the session you invoke it from.
 
-| | Skill (`/pm-jobs-daily`) | API (`pm-jobs daily`) |
-|---|---|---|
-| Needs an API key | no | yes |
-| Runs unattended (cron) | no | yes |
-| Cost | Claude Code context | ~$8/month |
+Then read them:
+
+```bash
+uv run pm-jobs web        # http://localhost:8000
+```
+
+That's the whole loop. Everything below is for when something needs
+investigating or retuning.
+
+First time only: `uv sync`, then set your criteria in the two files under
+[Tuning](#tuning).
 
 ## The one rule
 
@@ -35,24 +42,46 @@ That's also what makes a cheap model safe to use here. The judgment that
 matters — *does this job require a language I don't speak* — is exactly where a
 small model errs, and its mistakes have to be recoverable.
 
-## Commands
+## When something needs looking at
 
 ```bash
-uv run pm-jobs daily               # scrape → backfill → review (API)
+uv run pm-jobs review --drops      # what got dropped, and why
+uv run pm-jobs review --re-review  # re-decide everything (keeps read/favorite)
+uv run pm-jobs stats               # what's in the store
+```
+
+`--drops` is the one worth knowing. It's how you check whether a filter is
+costing you jobs — most usefully the language calls, which are the only
+judgment in the whole pipeline that can quietly lose you something real.
+
+<details>
+<summary>Every other command</summary>
+
+Rarely needed — `/pm-jobs-daily` runs the ones that matter.
+
+```bash
+uv run pm-jobs daily               # scrape → backfill → review, all via the API
 uv run pm-jobs daily --no-review   # …leaving the judging to the skill
-uv run pm-jobs web                 # the page you read
 
 uv run pm-jobs scrape              # --full, --since-hours N, --dry-run
 uv run pm-jobs backfill            # LinkedIn descriptions only
 uv run pm-jobs review              # judge via the API; --dry-run costs nothing
 uv run pm-jobs review --export F   # emit a batch for an agent to judge
 uv run pm-jobs review --apply F    # store an agent's verdicts (validated)
-uv run pm-jobs review --drops      # what got dropped, and why
-uv run pm-jobs review --re-review  # re-decide everything (keeps read/favorite)
 
-uv run pm-jobs searches stats runs
-uv run python tests/run_all.py
+uv run pm-jobs searches            # what's configured
+uv run pm-jobs runs                # scrape history, including failures
+uv run python tests/run_all.py     # the smoke suites
 ```
+
+</details>
+
+### Running it without Claude Code
+
+`uv run pm-jobs daily` does the same job through the API instead of the skill —
+same instructions, same policy, same storage. It needs `ANTHROPIC_API_KEY` and
+costs roughly $8/month, and it's the path to use if you ever want this on a
+cron or in launchd, which the skill can't do because it needs a session.
 
 ## Tuning
 
