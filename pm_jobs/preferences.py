@@ -22,12 +22,14 @@ DEFAULT_PREFERENCES_PATH = Path("preferences.yaml")
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_EFFORT = "low"
 DEFAULT_SUMMARY_SENTENCES = 3
+DEFAULT_SOFTWARE_ONLY = True
 
 
 @dataclass(frozen=True)
 class Preferences:
     speak: tuple[str, ...]
     role_includes: tuple[str, ...]
+    software_only: bool
     tags: dict[str, str]
     model: str
     effort: str
@@ -77,6 +79,13 @@ def load_preferences(path: Path | str = DEFAULT_PREFERENCES_PATH) -> Preferences
     if isinstance(includes, str):
         includes = [includes]
 
+    # Optional, and defaulting to on: an existing preferences.yaml written
+    # before this rule existed should still get the filter.
+    domain = raw.get("domain") or {}
+    if not isinstance(domain, dict):
+        raise ConfigError(f"{path}: 'domain' must be a block with a 'software_only' key")
+    software_only = bool(domain.get("software_only", DEFAULT_SOFTWARE_ONLY))
+
     tags = _require(raw, "tags", str(path))
     if not isinstance(tags, dict):
         raise ConfigError(f"{path}: 'tags' must be a mapping of tag name -> description")
@@ -88,6 +97,7 @@ def load_preferences(path: Path | str = DEFAULT_PREFERENCES_PATH) -> Preferences
     # comment in the file does not.
     material = json.dumps(
         {"speak": sorted(speak), "roles": sorted(includes), "tags": tags,
+         "software_only": software_only,
          "model": review.get("model", DEFAULT_MODEL)},
         sort_keys=True, ensure_ascii=False,
     )
@@ -95,6 +105,7 @@ def load_preferences(path: Path | str = DEFAULT_PREFERENCES_PATH) -> Preferences
     return Preferences(
         speak=tuple(speak),
         role_includes=tuple(includes),
+        software_only=software_only,
         tags=tags,
         model=str(review.get("model", DEFAULT_MODEL)),
         effort=str(review.get("effort", DEFAULT_EFFORT)),

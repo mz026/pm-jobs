@@ -38,7 +38,8 @@ class FakeClient:
             raise RuntimeError("simulated 429")
         is_pm = not any(w in title.lower() for w in ("designer", "engineer", "compliance", "program manager"))
         langs = ["English", "German"] if "Drives" in title else ["English"]
-        payload = {"is_product_role": is_pm, "languages_required": langs,
+        payload = {"is_product_role": is_pm, "is_software_product": True,
+                   "product_managed": "a web platform", "languages_required": langs,
                    "language_evidence": "Fluent in English", "tags": ["consumer"],
                    "summary": "A product role at a company."}
         class R:
@@ -75,10 +76,24 @@ print("second pass:", r2.summary())
 assert r2.considered == 0
 
 # policy is decided in Python, not the prompt
-assert decide(prefs, {"is_product_role": False, "languages_required": []})[0] == "drop"
-assert decide(prefs, {"is_product_role": True, "languages_required": ["English", "German"]})[1].startswith("language_required")
-assert decide(prefs, {"is_product_role": True, "languages_required": ["Mandarin"]})[0] == "keep"
-assert decide(prefs, {"is_product_role": True, "languages_required": []})[0] == "keep"
+def verdict(**over):
+    return decide(prefs, {"is_product_role": True, "is_software_product": True,
+                          "product_managed": "an app", "languages_required": [], **over})
+
+assert verdict(is_product_role=False)[0] == "drop"
+assert verdict(languages_required=["English", "German"])[1].startswith("language_required")
+assert verdict(languages_required=["Mandarin"])[0] == "keep"
+assert verdict()[0] == "keep"
+
+# a product role for a physical product is dropped when software_only is on
+assert prefs.software_only, "preferences.yaml ships with the software filter on"
+assert verdict(is_software_product=False, product_managed="footwear")[1] == "not_software_product"
+
+# ...and kept when it's off, without touching any other rule
+from dataclasses import replace
+anything = replace(prefs, software_only=False)
+assert decide(anything, {"is_product_role": True, "is_software_product": False,
+                         "product_managed": "footwear", "languages_required": []})[0] == "keep"
 
 # state survives a full re-review — the entire reason the tables are split
 first = store.list_jobs("unread")[0]

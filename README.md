@@ -92,19 +92,35 @@ Two files, no Python edits.
 per search; jobspy accepts it three different ways and silently searches the
 wrong place if they disagree, so all three are derived from one block.
 
+Only **LinkedIn and Indeed** are enabled, and that is not a preference. Of
+jobspy's eight boards, Glassdoor and Google are broken upstream (they return
+nothing for a US query either), and ZipRecruiter, Bayt, Naukri and BDJobs are
+regional boards that don't cover the Netherlands. `searches.yaml` records the
+probe results and the one-liner to re-test a board before enabling it.
+
 **`preferences.yaml`** — the languages you speak, the titles that count as
-product roles, and what each tag means.
+product roles, whether non-software products are in scope
+(`domain.software_only`), and what each tag means.
 
 ## What gets dropped
 
-Three filters. Two are deterministic and cost nothing; only the third needs a
+Four filters. Two are deterministic and cost nothing; the other two need a
 model.
 
 | Filter | How | Effect on the current corpus |
 |---|---|---|
 | **Written** in Dutch | Word-frequency detection — no model | 13 of 149 |
 | Not a product role | Title match against `preferences.yaml` — no model | 79 of 149 |
+| Not a **software** product | Model | on the remainder |
 | **Requires** a language you don't speak | Model | on the remainder |
+
+"Product Manager" is a job title outside tech too, and the boards return those
+postings unmodified: shoes, packaged food, furniture, freight, insurance
+policies. The title matches perfectly, so no word list separates them — only
+reading the posting does. The model is asked to name what the role would
+actually ship before answering, which is what keeps a footwear PM apart from
+the PM for a footwear brand's app. Turn it off with `domain.software_only:
+false`.
 
 The first and third both concern language, and they are not the same question.
 *What language is this written in* is decidable by counting words. *What

@@ -258,7 +258,7 @@ auditing a decision and guessing at it.
 ### Two backends, one policy
 
 The judging can come from either the API or from the Claude Code agent that
-invokes the daily skill. Both answer the same five questions against the same
+invokes the daily skill. Both answer the same questions against the same
 instructions, and both hand their answers to the same `decide()` function — so
 which one ran is a billing and setup difference, not a behavioural one.
 

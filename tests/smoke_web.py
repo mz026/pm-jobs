@@ -27,7 +27,8 @@ class R:
     def content(self):
         n[0] += 1
         return [type("B", (), {"type": "text", "text": json.dumps({
-            "is_product_role": True, "languages_required": ["English"],
+            "is_product_role": True, "is_software_product": True,
+            "product_managed": "a web platform", "languages_required": ["English"],
             "language_evidence": "Fluent in English",
             "tags": TAGS[n[0] % len(TAGS)],
             "summary": f"Synthetic summary number {n[0]} describing the product and its users.",

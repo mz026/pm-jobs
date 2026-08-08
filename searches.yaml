@@ -7,16 +7,44 @@
 # Edit freely — this file is the tuning surface. No Python changes needed.
 
 defaults:
+  # LinkedIn and Indeed are the only two of jobspy's eight boards that return
+  # anything for the Netherlands. Probed 2026-08-08, one small request each:
+  #
+  #   glassdoor      HTTP 400 from its location API — "location not parsed".
+  #                  Fails identically for 'New York, NY', so the scraper is
+  #                  broken upstream, not missing Dutch coverage.
+  #   google         "initial cursor not found" — Google's markup moved. Also
+  #                  returns nothing for a US query.
+  #   zip_recruiter  HTTP 403; US/Canada only by design.
+  #   bayt           HTTP 403; Middle East.
+  #   naukri         HTTP 406, recaptcha; India.
+  #   bdjobs         TypeError inside jobspy itself; Bangladesh.
+  #
+  # python-jobspy is pinned at 1.1.82 and that is the latest release, so there
+  # is no upgrade that fixes glassdoor or google. Adding either here would buy
+  # six failing legs per run, not more jobs. Re-test before enabling one:
+  #
+  #   uv run python -c "from jobspy import scrape_jobs; \
+  #     print(len(scrape_jobs(site_name=['glassdoor'], search_term='product manager', \
+  #     location='Amsterdam, Netherlands', country_indeed='netherlands', \
+  #     results_wanted=5, verbose=2)))"
+  #
+  # Each (term, board) pair is its own leg with its own error, so a board that
+  # starts working can simply be added to this list.
   boards: [linkedin, indeed]
   results_wanted: 50
   hours_old: 72
-  distance: 25
+  # Radius around `location.query`, in MILES — not kilometres. Both boards take
+  # it that way (jobspy hands Indeed `radiusUnit: MILES`, and LinkedIn's own
+  # parameter is miles). 200 miles ≈ 320 km, which covers the whole of the
+  # Netherlands from any point in it.
+  distance: 200
   # LinkedIn descriptions are fetched by a separate backfill pass, not inline:
   # inline fetching is ~10x slower and more ban-prone.
   fetch_descriptions: false
 
 searches:
-  - name: pm-north-holland
+  - name: pm-netherlands
     enabled: true
     terms:
       - product manager
@@ -24,9 +52,14 @@ searches:
       - technical product manager
     location:
       # `query` is what gets sent to the boards. `region`/`country` are the
-      # canonical labels stage 2 normalizes against and stage 3 filters on.
-      query: North Holland, NL
-      region: North Holland
+      # canonical labels used for the Google search phrasing and for display.
+      #
+      # Country-level `query` plus the wide `distance` above is what makes this
+      # nationwide: Amsterdam, Rotterdam, Eindhoven, Groningen and everything
+      # between are in scope. A radius that wide can pull the odd Belgian or
+      # German border posting through LinkedIn; `indeed_country` pins Indeed.
+      query: Netherlands
+      region: Netherlands
       country: Netherlands
       # jobspy's Indeed-specific country key. Must match `country` above.
       indeed_country: netherlands

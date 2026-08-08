@@ -14,6 +14,19 @@ languages:
   # requirements — the model is told this explicitly.
   speak: [English, Mandarin]
 
+domain:
+  # Product managers exist outside tech. The boards return "Product Manager"
+  # roles for shoes, food, furniture, insurance policies and freight — the
+  # title matches perfectly and the job has nothing to do with software.
+  #
+  # With this on, a posting is dropped unless the thing being managed is
+  # software or a digital product. Hardware and physical goods with software
+  # at their core (a connected device, a car's infotainment) still count; a
+  # SaaS company selling a non-software product does not.
+  #
+  # Set to false to see every product role regardless of what it makes.
+  software_only: true
+
 roles:
   # Titles matched against these, case-insensitively. Boards match keywords
   # loosely: without this filter the list fills with '.Net Developer',

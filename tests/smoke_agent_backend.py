@@ -25,7 +25,8 @@ print(f"exported run {batch['run_id']}: {len(batch['jobs'])} to judge, "
 # The export must be self-contained: the skill judges from it, not from memory.
 assert batch["instructions"] and len(batch["instructions"]) > 3000, "instructions travel with the work"
 assert set(batch["schema"]["properties"]) == {
-    "is_product_role", "languages_required", "language_evidence", "tags", "summary"}
+    "is_product_role", "is_software_product", "product_managed",
+    "languages_required", "language_evidence", "tags", "summary"}
 assert all("description" in j and "role_certain" in j for j in batch["jobs"])
 assert "Vloeiend in Nederlands" in batch["instructions"], "worked language examples included"
 
@@ -33,6 +34,7 @@ def verdicts_for(b, **over):
     """Verdicts for every job in batch `b`, carrying that batch's own run_id."""
     return {"run_id": b["run_id"], "verdicts": [
         {"raw_job_id": j["raw_job_id"], "is_product_role": True,
+         "is_software_product": True, "product_managed": "a web platform",
          "languages_required": ["English"], "language_evidence": "Fluent in English",
          "tags": ["consumer"], "summary": "A product role.", **over} for j in b["jobs"]]}
 
@@ -64,6 +66,7 @@ rejects({"run_id": 99999, "verdicts": [{"raw_job_id": 1}]}, "no review run")
 rejects({"run_id": batch["run_id"], "verdicts": []}, "non-empty list")
 rejects(verdicts_for({"run_id": batch["run_id"], "jobs": batch["jobs"][:1]}, tags=["made-up"]), "unknown tag")
 rejects({"run_id": batch["run_id"], "verdicts": [{"raw_job_id": 10**9, "is_product_role": True,
+         "is_software_product": True, "product_managed": "x",
          "languages_required": [], "tags": [], "summary": "x"}]}, "not awaiting judgement")
 bad = verdicts_for({"run_id": batch["run_id"], "jobs": batch["jobs"][:1]})
 del bad["verdicts"][0]["languages_required"]
@@ -91,15 +94,22 @@ b3 = export_judgeable()
 r3 = apply_verdicts(store, prefs, verdicts_for(b3, languages_required=["Mandarin"]))
 assert r3.kept == len(b3["jobs"]), "Mandarin is spoken"
 
+# a product role for a non-software product drops, same policy as the API path
+b4 = export_judgeable()
+r4 = apply_verdicts(store, prefs, verdicts_for(b4, is_software_product=False,
+                                               product_managed="a footwear line"))
+assert r4.kept == 0, "shoes are not a software product"
+assert "not_software_product" in {row["reason"] for row in store.drop_reasons()}
+
 # --- re-applying a stale file is refused ------------------------------------
 rejects(verdicts_for(batch), "not awaiting judgement")
 
 # --- a preferences change invalidates an outstanding export -----------------
-b4 = export_judgeable()
+b5 = export_judgeable()
 moved = load_preferences(str(ROOT / "preferences.yaml"))
 object.__setattr__(moved, "_hash", "different-hash")
 try:
-    apply_verdicts(store, moved, verdicts_for(b4))
+    apply_verdicts(store, moved, verdicts_for(b5))
     raise AssertionError("should refuse verdicts judged under different preferences")
 except ApplyError as exc:
     assert "preferences changed" in str(exc), exc

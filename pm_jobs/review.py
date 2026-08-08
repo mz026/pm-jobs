@@ -23,6 +23,7 @@ from .preferences import Preferences
 from .reviewstore import ReviewStore
 
 DROP_LANGUAGE = "language_required"
+DROP_NOT_SOFTWARE = "not_software_product"
 
 MAX_TOKENS = 4000
 PAUSE_BETWEEN_CALLS_SEC = 0.0   # the API is not the thing that rate-limits us
@@ -36,6 +37,19 @@ RESULT_SCHEMA = {
                            "product owner, head/director/VP of product, CPO). False for "
                            "product design, product engineering, program management, "
                            "product marketing, or product compliance roles.",
+        },
+        "is_software_product": {
+            "type": "boolean",
+            "description": "True if the product this role manages is software or digital "
+                           "(an app, a platform, an API, a website, a data product), or "
+                           "hardware whose value is mostly in its software. False if it is "
+                           "a physical good, a financial or insurance product, or a "
+                           "non-technical service.",
+        },
+        "product_managed": {
+            "type": "string",
+            "description": "The thing this role would actually manage, in a few words, as "
+                           "the posting describes it. Empty string if the posting never says.",
         },
         "languages_required": {
             "type": "array",
@@ -58,7 +72,8 @@ RESULT_SCHEMA = {
             "description": "What this job is and who it's for.",
         },
     },
-    "required": ["is_product_role", "languages_required", "language_evidence", "tags", "summary"],
+    "required": ["is_product_role", "is_software_product", "product_managed",
+                 "languages_required", "language_evidence", "tags", "summary"],
     "additionalProperties": False,
 }
 
@@ -74,8 +89,8 @@ def build_system_prompt(prefs: Preferences) -> str:
 
     return f"""\
 You are screening job postings for one product manager. For each posting you \
-are given, answer five questions about it. Answer only from what the posting \
-says — do not infer requirements it doesn't state.
+are given, answer the questions below about it. Answer only from what the \
+posting says — do not infer requirements it doesn't state.
 
 ## 1. Is this a product management role?
 
@@ -92,7 +107,38 @@ Job titles are unreliable — they are translated, abbreviated, and misspelled. 
 Read the responsibilities in the description when the title is unclear. A \
 posting titled "Senior Product Ownwer" is a product owner role.
 
-## 2. Which languages does it actually require?
+## 2. Is the product it manages software?
+
+Product management exists in every industry. These boards return "Product \
+Manager" postings for footwear, food, furniture, freight, insurance policies \
+and clothing lines — the title is identical and the work is not software.
+
+Yes when the thing being managed is software or digital: an app, a web \
+product, a platform, an API, a developer tool, an internal system, a data or \
+AI product, a marketplace, a SaaS offering.
+
+Yes also for hardware whose value lives mostly in its software — a connected \
+device, a vehicle's infotainment system, a medical device's interface.
+
+No when the product is a physical good (shoes, apparel, packaged food, \
+machinery, building materials), a financial or insurance product, a logistics \
+or retail category, or a non-technical service. A company that has a website \
+or "uses digital channels" is not thereby a software product; ask what the \
+role would ship.
+
+Two cases worth care:
+
+- A **category / brand / assortment manager** at a retailer is a merchandising \
+role even when titled Product Manager. That is not a software product.
+- A software company can post a non-software role, and a non-tech company \
+(a bank, a retailer, a hospital) very often posts a genuine software product \
+role for its own app or platform. Judge the product, not the employer.
+
+Name what the role manages in `product_managed`, in a few words, so a wrong \
+call is visible. Empty string if the posting genuinely never says — and when \
+it never says, answer from the responsibilities rather than assuming.
+
+## 3. Which languages does it actually require?
 
 The reader speaks {spoken} and nothing else. This determines whether they can \
 apply, so the distinction between a requirement and a preference matters.
@@ -130,7 +176,7 @@ up in other wordings.
 Quote the phrase you based this on in `language_evidence`, so a wrong call can \
 be spotted. Empty string if the posting states no language requirement.
 
-## 3–4. Which tags apply?
+## 4. Which tags apply?
 
 Use only these, and only when the posting genuinely fits. An empty array is a \
 normal answer — most jobs match nothing, and a tag applied loosely is worse \
@@ -263,6 +309,15 @@ def decide(prefs: Preferences, result: dict[str, Any]) -> tuple[str, str | None]
     if not result.get("is_product_role"):
         return "drop", DROP_NOT_PRODUCT
 
+    # `product_managed` deliberately does not go into the reason string, even
+    # though it is the evidence: `--drops` groups by reason, and a reason that
+    # names each product would make that view one row per job. It earns its
+    # place in the schema anyway — a model that must name what the role ships
+    # before judging it gets the shoes-versus-shoe-app case right far more
+    # often than one asked for the boolean alone.
+    if prefs.software_only and not result.get("is_software_product"):
+        return "drop", DROP_NOT_SOFTWARE
+
     spoken = {s.strip().lower() for s in prefs.speak}
     required = [str(x) for x in result.get("languages_required") or []]
     unspoken = [lang for lang in required if lang.strip().lower() not in spoken]
@@ -371,7 +426,8 @@ def apply_verdicts(store: ReviewStore, prefs: Preferences, payload: dict[str, An
                 f"raw_job_id {raw_job_id!r} is not awaiting judgement in this run "
                 "(already judged, or never exported)"
             )
-        for field_name in ("is_product_role", "languages_required", "tags", "summary"):
+        for field_name in ("is_product_role", "is_software_product", "product_managed",
+                           "languages_required", "tags", "summary"):
             if field_name not in entry:
                 raise ApplyError(f"raw_job_id {raw_job_id}: missing {field_name!r}")
 

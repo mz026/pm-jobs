@@ -31,8 +31,13 @@ class Location:
     indeed_country: str
 
     def google_term(self, search_term: str) -> str:
-        """jobspy's Google scraper wants a prose query, not a location field."""
-        return f"{search_term} jobs in {self.region}, {self.country}"
+        """jobspy's Google scraper wants a prose query, not a location field.
+
+        A country-wide search sets region == country; saying it twice ("jobs in
+        Netherlands, Netherlands") is the kind of phrasing that skews results.
+        """
+        where = self.region if self.region == self.country else f"{self.region}, {self.country}"
+        return f"{search_term} jobs in {where}"
 
 
 @dataclass(frozen=True)
@@ -43,7 +48,7 @@ class Search:
     boards: tuple[str, ...]
     results_wanted: int
     hours_old: int
-    distance: int
+    distance: int          # radius around location.query, in miles (jobspy's unit)
     fetch_descriptions: bool
     enabled: bool = True
 

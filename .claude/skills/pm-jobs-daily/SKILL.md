@@ -53,10 +53,10 @@ lot.
 
 ## 3. Judge the batch
 
-For each job in the file, answer the five questions in `instructions` and
-produce one object matching `schema`.
+For each job in the file, answer every question in `instructions` and produce
+one object matching `schema`.
 
-Two things worth slowing down for:
+Three things worth slowing down for:
 
 - **The language question decides whether the user can apply at all.** They
   speak English and Mandarin. "Dutch is a plus", a language course offered as a
@@ -64,6 +64,12 @@ Two things worth slowing down for:
   are **not** requirements. The instructions carry worked examples — use them.
   Search the full description for language wording rather than judging from the
   part you happened to read.
+- **"Product Manager" is a job title outside tech too.** These boards return
+  real product roles for shoes, food, furniture, freight and insurance. Ask
+  what the role would ship, write it into `product_managed`, and judge
+  `is_software_product` from that — not from whether the employer sounds
+  modern. A bank's mobile-app PM is software; a sportswear brand's footwear PM
+  is not.
 - **`role_certain: false`** means the title mentions product but matched no
   configured role phrase, so the title told us nothing. Decide from the
   responsibilities: a role that owns a product's direction is product
@@ -79,6 +85,8 @@ Write the verdicts to a file:
     {
       "raw_job_id": 31,
       "is_product_role": true,
+      "is_software_product": true,
+      "product_managed": "the customer-facing mobile banking app",
       "languages_required": ["English"],
       "language_evidence": "Fluent in English as a working language",
       "tags": ["consumer"],
